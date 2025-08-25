@@ -176,9 +176,9 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 ```bibtex
 @software{lightweight_world_model,
   title = {Lightweight Interactive World Model for Consumer GPUs},
-  author = {Your Name},
+  author = {Annas Bin Adil},
   year = {2025},
-  url = {https://github.com/yourusername/lightweight-world-model}
+  url = {https://github.com/annasba07/lightweight-world-model}
 }
 ```
 
@@ -192,8 +192,3 @@ MIT License - see [LICENSE](LICENSE) for details.
 - Built on PyTorch and Mamba architectures
 - Thanks to the open-source ML community
 
-## Contact
-
-- GitHub Issues: [Report bugs or request features](https://github.com/yourusername/lightweight-world-model/issues)
-- Discord: [Join our community](https://discord.gg/worldmodels)
-- Email: worldmodel@example.com
