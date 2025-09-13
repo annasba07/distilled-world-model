@@ -1,0 +1,2 @@
+"""Lightweight World Model package."""
+
