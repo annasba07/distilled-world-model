@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lightweight World Model • Demo</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">🌎</span>
+        <span class="title">Lightweight World Model</span>
+      </div>
+      <div class="status">
+        <div class="health">
+          <span class="dot" id="healthDot"></span>
+          <span id="healthText">Checking server…</span>
+        </div>
+        <button class="btn btn-ghost" id="themeToggle" aria-label="Toggle theme">🌓</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="stage">
+        <div class="canvas-wrap">
+          <canvas id="frameCanvas" width="512" height="512" aria-label="World view"></canvas>
+          <div class="overlay hidden" id="overlay">
+            <div class="spinner"></div>
+          </div>
+        </div>
+        <div class="timeline" id="timeline" aria-label="Frame history"></div>
+      </section>
+
+      <aside class="sidebar">
+        <div class="card">
+          <label for="prompt" class="label">Prompt</label>
+          <div class="row">
+            <input id="prompt" class="input" placeholder="e.g., 2D platformer with grass and clouds" />
+          </div>
+          <div class="row gap">
+            <button id="btnGenerate" class="btn btn-primary">Generate</button>
+            <button id="btnReset" class="btn">Reset</button>
+            <button id="btnDownload" class="btn">Download</button>
+            <button id="btnRecord" class="btn">Record</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="stats">
+            <div class="stat">
+              <div class="stat-label">FPS</div>
+              <div class="stat-value" id="fpsValue">-</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">Inference</div>
+              <div class="stat-value" id="latencyValue">-</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">Frames</div>
+              <div class="stat-value" id="framesValue">-</div>
+            </div>
+          </div>
+          <canvas id="fpsSpark" class="sparkline" width="240" height="48" aria-label="FPS trend"></canvas>
+        </div>
+
+        <div class="card">
+          <div class="row space">
+            <div>
+              <div class="muted">Session</div>
+              <div class="mono" id="sessionId">—</div>
+            </div>
+            <button id="btnCopy" class="btn btn-ghost">Copy</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="label">Controls</div>
+          <div class="kbd-help">
+            <div class="keys-row">
+              <div class="key" data-key="w">W</div>
+            </div>
+            <div class="keys-row">
+              <div class="key" data-key="a">A</div>
+              <div class="key" data-key="s">S</div>
+              <div class="key" data-key="d">D</div>
+            </div>
+            <div class="keys-row">
+              <div class="key" data-key=" ">Space</div>
+            </div>
+          </div>
+          <div class="dpad" aria-label="On-screen controls">
+            <button class="dpad-btn" data-action="up">▲</button>
+            <div class="row-center">
+              <button class="dpad-btn" data-action="left">◀</button>
+              <button class="dpad-btn" data-action="action">●</button>
+              <button class="dpad-btn" data-action="right">▶</button>
+            </div>
+            <button class="dpad-btn" data-action="down">▼</button>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
+

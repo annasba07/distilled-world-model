@@ -1,0 +1,21 @@
+name: "🧰 Task"
+description: Track a concrete piece of work
+labels: [task]
+assignees: []
+body:
+  - type: textarea
+    id: desc
+    attributes:
+      label: Description
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: Implementation
+        - label: Tests / Validation
+        - label: Docs / Changelog
+        - label: Review
+

@@ -1,0 +1,42 @@
+{
+  "test_date": "2025-08-24 23:44:24",
+  "milestone": "Next-Frame Prediction (Milestone 2)",
+  "tests_passed": 4,
+  "tests_total": 4,
+  "milestone_achieved": true,
+  "results": {
+    "model_loading": {
+      "status": "success",
+      "total_parameters": 312309507,
+      "vqvae_parameters": 24696067,
+      "temporal_parameters": 287613440,
+      "model_size_mb": 1191.3662223815918
+    },
+    "memory_usage": {
+      "status": "success",
+      "max_memory_gb": 3.676401138305664,
+      "under_8gb_limit": true
+    },
+    "basic_prediction": {
+      "status": "success",
+      "mse": 1.0305027961730957,
+      "psnr": -0.13049174845218658,
+      "prediction_shape": [
+        1,
+        7,
+        262144
+      ],
+      "target_shape": [
+        1,
+        7,
+        262144
+      ]
+    },
+    "inference_speed": {
+      "status": "success",
+      "avg_time_ms": 107.2655200958252,
+      "time_per_frame_ms": 13.40819001197815,
+      "under_100ms": "True"
+    }
+  }
+}

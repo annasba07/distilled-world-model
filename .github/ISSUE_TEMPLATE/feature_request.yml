@@ -1,0 +1,31 @@
+name: "✨ Feature Request"
+description: Propose an improvement or new capability
+labels: [enhancement]
+assignees: []
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Opportunity
+      description: What user need does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Describe the UX/API changes. Include wireframe/mock if helpful.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope / Out-of-Scope
+  - type: textarea
+    id: success
+    attributes:
+      label: Success Criteria
+      placeholder: | 
+        - KPI 1
+        - KPI 2
+
