@@ -8,7 +8,7 @@ import base64
 import io
 from PIL import Image
 import json
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import uuid
 from datetime import datetime
 import torch
@@ -84,13 +84,15 @@ async def create_session(request: InitRequest):
     
     engine.create_session(session_id)
     
-    initial_frame = engine.generate_interactive(request.prompt)
+    initial_frame = engine.generate_interactive(request.prompt, seed=request.seed)
     
     sessions[session_id] = {
         "created_at": datetime.now().isoformat(),
         "frames_generated": 1,
         "current_fps": 0,
-        "prompt": request.prompt
+        "prompt": request.prompt,
+        "seed": request.seed,
+        "actions": []
     }
     
     frame_base64 = frame_to_base64(initial_frame)
@@ -118,6 +120,10 @@ async def step_session(request: ActionRequest):
     
     sessions[request.session_id]["frames_generated"] += 1
     sessions[request.session_id]["current_fps"] = metrics["fps"]
+    sessions[request.session_id]["actions"].append({
+        "t": datetime.now().isoformat(),
+        "action": request.action
+    })
     
     frame_base64 = frame_to_base64(frame)
     
@@ -170,7 +176,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             "created_at": datetime.now().isoformat(),
             "frames_generated": 0,
             "current_fps": 0,
-            "prompt": None
+            "prompt": None,
+            "seed": None,
+            "actions": []
         }
     
     try:
@@ -185,6 +193,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 
                 sessions[session_id]["frames_generated"] += 1
                 sessions[session_id]["current_fps"] = metrics["fps"]
+                sessions[session_id]["actions"].append({
+                    "t": datetime.now().isoformat(),
+                    "action": action
+                })
                 
                 frame_base64 = frame_to_base64(frame)
                 
@@ -197,10 +209,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 
             elif message["type"] == "reset":
                 prompt = message.get("prompt", None)
-                initial_frame = engine.generate_interactive(prompt)
+                seed = message.get("seed", None)
+                initial_frame = engine.generate_interactive(prompt, seed=seed)
                 
                 sessions[session_id]["frames_generated"] = 1
                 sessions[session_id]["prompt"] = prompt
+                sessions[session_id]["seed"] = seed
+                sessions[session_id]["actions"] = []
                 
                 frame_base64 = frame_to_base64(initial_frame)
                 
@@ -224,6 +239,128 @@ async def health_check():
         "active_sessions": len(sessions),
         "cuda_available": torch.cuda.is_available()
     }
+
+
+# Models endpoints
+@app.get("/models")
+async def list_models():
+    ckpt_dir = cfg.CHECKPOINTS_DIR
+    models: List[Dict[str, Any]] = []
+    try:
+        for p in ckpt_dir.glob("**/*.pt"):
+            try:
+                size = p.stat().st_size
+                mtime = p.stat().st_mtime
+            except Exception:
+                size = None; mtime = None
+            models.append({
+                "id": p.name,
+                "path": str(p.resolve()),
+                "size": size,
+                "modified": mtime
+            })
+    except Exception as e:
+        logger.warning("Failed to list models: %s", e)
+    return {
+        "models": models,
+        "current_model": engine.model_path
+    }
+
+
+class LoadModelRequest(BaseModel):
+    id: str  # filename under checkpoints dir
+
+
+@app.post("/models/load")
+async def load_model(req: LoadModelRequest):
+    target = (cfg.CHECKPOINTS_DIR / req.id).resolve()
+    if not target.exists():
+        raise HTTPException(status_code=404, detail=f"Model not found: {target}")
+    try:
+        engine.reload_model(str(target))
+        return {"status": "ok", "current_model": engine.model_path}
+    except Exception as e:
+        logger.exception("Failed to load model: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to load model")
+
+
+@app.get("/models/status")
+async def model_status():
+    return {"current_model": engine.model_path, "ready": engine is not None}
+
+
+# Snapshot & Replay
+class SnapshotRequest(BaseModel):
+    session_id: str
+
+
+@app.post("/session/snapshot")
+async def snapshot_session(req: SnapshotRequest):
+    if req.session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    state = sessions[req.session_id]
+    snapshot = {
+        "session_id": req.session_id,
+        "prompt": state.get("prompt"),
+        "seed": state.get("seed"),
+        "actions": state.get("actions", []),
+        "settings": {
+            "resolution": 256,
+        },
+        "model": engine.model_path,
+        "created_at": datetime.now().isoformat(),
+    }
+    return snapshot
+
+
+class ReplayRequest(BaseModel):
+    prompt: Optional[str] = None
+    seed: Optional[int] = None
+    actions: List[Dict[str, Any]]
+    model: Optional[str] = None
+    settings: Optional[Dict[str, Any]] = None
+
+
+@app.post("/session/replay")
+async def replay_session(req: ReplayRequest):
+    # Build a temporary engine to avoid altering global session state
+    tmp_engine = BatchedInferenceEngine(
+        model_path=req.model or engine.model_path,
+        device="cpu",  # favor determinism
+        use_tensorrt=False,
+        use_fp16=False,
+        batch_size=1,
+    )
+    # Seed and generate initial frame
+    initial = tmp_engine.generate_interactive(req.prompt, seed=req.seed)
+    frames = [frame_to_base64(initial)]
+    for act in req.actions:
+        a = int(act.get("action", 0))
+        frame, _ = tmp_engine.step(a)
+        frames.append(frame_to_base64(frame))
+    return {"frames": frames, "count": len(frames)}
+
+
+# Settings (minimal placeholder)
+class Settings(BaseModel):
+    resolution: int = 256
+    fps_target: Optional[int] = None
+    overlay: bool = True
+
+
+_settings = Settings()
+
+
+@app.get("/settings")
+async def get_settings():
+    return _settings.dict()
+
+
+@app.post("/settings")
+async def set_settings(s: Settings):
+    global _settings
+    _settings = s
+    return {"status": "ok"}
 
 
 @app.post("/batch/process")

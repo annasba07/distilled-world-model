@@ -24,6 +24,7 @@ class OptimizedInferenceEngine:
         self.frame_buffer_size = frame_buffer_size
         self.batch_size = batch_size
         
+        self.model_path = model_path
         self.model = self._load_model(model_path)
         self.latent_shape = self._infer_latent_shape()
         
@@ -37,7 +38,16 @@ class OptimizedInferenceEngine:
         self.frame_queue = Queue()
         
         self._init_buffers()
-        
+
+    def seed_everything(self, seed: int):
+        """Seed torch and numpy for deterministic behavior within this engine scope."""
+        import random
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
     def _load_model(self, model_path: Optional[str]) -> WorldModel:
         """
         Build a WorldModel and optionally load weights from a checkpoint.
@@ -83,6 +93,13 @@ class OptimizedInferenceEngine:
         if self.use_fp16:
             model = model.half()
         return model
+
+    def reload_model(self, model_path: str):
+        """Reload model weights from a new checkpoint path."""
+        self.model_path = model_path
+        self.model = self._load_model(model_path)
+        self.latent_shape = self._infer_latent_shape()
+        self._init_buffers()
 
     def _infer_latent_shape_static(self, vqvae: ImprovedVQVAE, input_shape: Tuple[int, int, int]) -> Tuple[int, int, int]:
         with torch.no_grad():
@@ -177,21 +194,33 @@ class OptimizedInferenceEngine:
         
         return frame, current_latent
     
-    def generate_interactive(self, initial_prompt: str = None):
+    def generate_interactive(self, initial_prompt: str = None, seed: Optional[int] = None):
         self.is_running = True
         
+        if seed is not None:
+            self.seed_everything(seed)
+        
         if initial_prompt:
-            initial_frame = self._generate_from_prompt(initial_prompt)
+            initial_frame = self._generate_from_prompt(initial_prompt, seed=seed)
         else:
-            initial_frame = np.random.randint(0, 255, (256, 256, 3), dtype=np.uint8)
+            rng = np.random.default_rng(seed)
+            initial_frame = rng.integers(0, 255, (256, 256, 3), dtype=np.uint8)
         
         self.current_latent = None
         current_frame = self.process_frame(initial_frame)
         
         return current_frame
     
-    def _generate_from_prompt(self, prompt: str):
-        return np.ones((256, 256, 3), dtype=np.uint8) * 128
+    def _generate_from_prompt(self, prompt: str, seed: Optional[int] = None):
+        # Placeholder prompt-to-initialization: deterministic gray background with seeded dots
+        img = np.ones((256, 256, 3), dtype=np.uint8) * 128
+        if seed is not None:
+            rng = np.random.default_rng(seed)
+            for _ in range(200):
+                x, y = rng.integers(0, 256, size=2)
+                color = rng.integers(80, 200, size=3, dtype=np.uint8)
+                img[y, x] = color
+        return img
     
     def step(self, action: int):
         if not self.is_running:
