@@ -21,6 +21,17 @@ const timeline = document.getElementById('timeline');
 const themeToggle = document.getElementById('themeToggle');
 const toast = document.getElementById('toast');
 const recBadge = document.getElementById('recBadge');
+const modelsSelect = document.getElementById('modelsSelect');
+const btnLoadModel = document.getElementById('btnLoadModel');
+const currentModelEl = document.getElementById('currentModel');
+const samplePromptsEl = document.getElementById('samplePrompts');
+const seedEl = document.getElementById('seed');
+const btnExportSnapshot = document.getElementById('btnExportSnapshot');
+const fileImportSnapshot = document.getElementById('fileImportSnapshot');
+const btnStopReplay = document.getElementById('btnStopReplay');
+const settingResolution = document.getElementById('settingResolution');
+const settingFps = document.getElementById('settingFps');
+const settingOverlay = document.getElementById('settingOverlay');
 
 // State
 let ws = null;
@@ -35,6 +46,9 @@ let latestMetrics = null;
 let recording = false;
 let mediaRecorder = null;
 let recordedChunks = [];
+let playbackTimer = null;
+let playbackIdx = 0;
+let playbackFrames = [];
 
 const actionMap = {
   'w': 0, 'a': 1, 's': 2, 'd': 3,
@@ -61,6 +75,23 @@ async function healthCheck() {
 }
 setInterval(healthCheck, 5000);
 healthCheck();
+async function refreshModels() {
+  try {
+    const res = await fetch(`${API_URL}/models`);
+    const data = await res.json();
+    modelsSelect.innerHTML = '';
+    (data.models || []).forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.id;
+      modelsSelect.appendChild(opt);
+    });
+    currentModelEl.textContent = data.current_model || '—';
+  } catch (e) {
+    console.warn('Failed to refresh models', e);
+  }
+}
+refreshModels();
 
 function setBusy(v) {
   isBusy = v;
@@ -135,7 +166,7 @@ async function createSession() {
     const res = await fetch(`${API_URL}/session/create`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: promptEl.value || null })
+      body: JSON.stringify({ prompt: promptEl.value || null, seed: seedEl.value ? Number(seedEl.value) : null })
     });
     const data = await res.json();
     sessionId = data.session_id;
@@ -189,7 +220,7 @@ function sendAction(action) {
 btnGenerate.addEventListener('click', createSession);
 btnReset.addEventListener('click', () => {
   if (!ws || ws.readyState !== WebSocket.OPEN) return showToast('Not connected');
-  ws.send(JSON.stringify({ type: 'reset', prompt: promptEl.value || null }));
+  ws.send(JSON.stringify({ type: 'reset', prompt: promptEl.value || null, seed: seedEl.value ? Number(seedEl.value) : null }));
   fpsHistory = [];
   drawSparkline(fpsSpark, fpsHistory);
   showToast('Reset');
@@ -204,6 +235,119 @@ btnRecord.addEventListener('click', () => {
   if (!('MediaRecorder' in window)) { showToast('Recording not supported'); return; }
   if (!recording) startRecording(); else stopRecording();
 });
+btnLoadModel.addEventListener('click', async () => {
+  const id = modelsSelect.value;
+  if (!id) return;
+  try {
+    setBusy(true);
+    const res = await fetch(`${API_URL}/models/load`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    currentModelEl.textContent = data.current_model || '—';
+    showToast('Model loaded');
+  } catch (e) {
+    console.error(e); showToast('Failed to load model');
+  } finally { setBusy(false); }
+});
+const SAMPLES = [
+  '2D platformer with grassy ground and clouds',
+  'Top-down maze with coins and enemies',
+  'Physics sandbox with bouncing balls',
+  'Puzzle grid with moving blocks'
+];
+function renderSamples() {
+  samplePromptsEl.innerHTML = '';
+  SAMPLES.forEach(p => {
+    const tag = document.createElement('div');
+    tag.className = 'tag'; tag.textContent = p;
+    tag.onclick = () => { promptEl.value = p; showToast('Prompt set'); };
+    samplePromptsEl.appendChild(tag);
+  });
+}
+renderSamples();
+btnExportSnapshot.addEventListener('click', async () => {
+  if (!sessionId) return showToast('No active session');
+  try {
+    const res = await fetch(`${API_URL}/session/snapshot`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId })
+    });
+    const snap = await res.json();
+    const blob = new Blob([JSON.stringify(snap, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = `snapshot_${Date.now()}.json`; a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (e) {
+    console.error(e); showToast('Snapshot failed');
+  }
+});
+fileImportSnapshot.addEventListener('change', async (ev) => {
+  const file = ev.target.files[0]; if (!file) return;
+  try {
+    const text = await file.text();
+    const snap = JSON.parse(text);
+    const res = await fetch(`${API_URL}/session/replay`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: snap.prompt || null,
+        seed: snap.seed || null,
+        actions: snap.actions || [],
+        model: snap.model || null,
+        settings: snap.settings || null,
+      })
+    });
+    const data = await res.json();
+    startPlayback(data.frames || []);
+  } catch (e) {
+    console.error(e); showToast('Replay failed');
+  }
+});
+btnStopReplay.addEventListener('click', () => stopPlayback());
+function startPlayback(frames) {
+  stopPlayback();
+  if (!frames.length) return;
+  playbackFrames = frames; playbackIdx = 0;
+  playbackTimer = setInterval(() => {
+    if (playbackIdx >= playbackFrames.length) return stopPlayback();
+    displayFrame(playbackFrames[playbackIdx++]);
+  }, 100);
+  showToast('Replaying snapshot');
+}
+function stopPlayback() {
+  if (playbackTimer) { clearInterval(playbackTimer); playbackTimer = null; }
+}
+function loadSettings() {
+  const s = JSON.parse(localStorage.getItem('lwm-settings') || '{}');
+  if (s.resolution) settingResolution.value = String(s.resolution);
+  if (s.fps_target) settingFps.value = s.fps_target;
+  settingOverlay.checked = s.overlay !== false;
+}
+async function saveSettings() {
+  const s = {
+    resolution: Number(settingResolution.value),
+    fps_target: settingFps.value ? Number(settingFps.value) : null,
+    overlay: !!settingOverlay.checked,
+  };
+  localStorage.setItem('lwm-settings', JSON.stringify(s));
+  try {
+    await fetch(`${API_URL}/settings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(s) });
+    showToast('Settings saved');
+  } catch (e) { console.warn('Failed to save settings', e); }
+}
+loadSettings();
+settingResolution.addEventListener('change', saveSettings);
+settingFps.addEventListener('change', saveSettings);
+settingOverlay.addEventListener('change', saveSettings);
+function applyQuery() {
+  const q = new URLSearchParams(location.search);
+  const p = q.get('prompt'); const s = q.get('seed');
+  if (p) promptEl.value = p;
+  if (s) seedEl.value = s;
+}
+applyQuery();
 
 function startRecording() {
   try {

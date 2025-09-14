@@ -35,9 +35,24 @@
 
       <aside class="sidebar">
         <div class="card">
+          <div class="label">Models</div>
+          <div class="row">
+            <select id="modelsSelect" class="input"></select>
+            <button id="btnLoadModel" class="btn">Load</button>
+          </div>
+          <div class="row space" style="margin-top:8px">
+            <div class="muted">Current</div>
+            <div class="mono" id="currentModel">—</div>
+          </div>
+        </div>
+
+        <div class="card">
           <label for="prompt" class="label">Prompt</label>
           <div class="row">
             <input id="prompt" class="input" placeholder="e.g., 2D platformer with grass and clouds" />
+          </div>
+          <div class="row" style="margin-top:8px">
+            <input id="seed" class="input" placeholder="Seed (optional)" />
           </div>
           <div class="row gap">
             <button id="btnGenerate" class="btn btn-primary">Generate</button>
@@ -45,6 +60,11 @@
             <button id="btnDownload" class="btn">Download</button>
             <button id="btnRecord" class="btn">Record</button>
           </div>
+        </div>
+
+        <div class="card">
+          <div class="label">Sample Prompts</div>
+          <div class="tags" id="samplePrompts"></div>
         </div>
 
         <div class="card">
@@ -72,6 +92,32 @@
               <div class="mono" id="sessionId">—</div>
             </div>
             <button id="btnCopy" class="btn btn-ghost">Copy</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="label">Snapshot & Replay</div>
+          <div class="row gap">
+            <button id="btnExportSnapshot" class="btn">Export</button>
+            <label class="btn" for="fileImportSnapshot">Import</label>
+            <input id="fileImportSnapshot" type="file" accept="application/json" style="display:none" />
+            <button id="btnStopReplay" class="btn">Stop Replay</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="label">Settings</div>
+          <div class="row" style="margin-bottom:8px">
+            <select id="settingResolution" class="input">
+              <option value="256">256×256</option>
+              <option value="128">128×128</option>
+            </select>
+          </div>
+          <div class="row" style="margin-bottom:8px">
+            <input id="settingFps" class="input" type="number" placeholder="FPS target (optional)" />
+          </div>
+          <div class="row">
+            <label><input type="checkbox" id="settingOverlay" checked /> Show overlay</label>
           </div>
         </div>
 
