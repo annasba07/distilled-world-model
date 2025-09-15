@@ -81,6 +81,7 @@ canvas { width: 100%; height: auto; display: block; image-rendering: crisp-edges
 .tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .tag { padding: 6px 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; cursor: pointer; font-size: 12px; }
 .tag:hover { filter: brightness(1.1); }
+.banner { align-self: flex-start; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--border); background: #0e1828; color: #9fb3c8; margin-bottom: 6px; }
 
 .kbd-help { display: grid; gap: 8px; }
 .keys-row { display: flex; justify-content: center; gap: 8px; }

@@ -95,7 +95,7 @@ async def create_session(request: InitRequest):
         "actions": []
     }
     
-    frame_base64 = frame_to_base64(initial_frame)
+    frame_base64 = encode_frame_current(initial_frame)
     
     return {
         "session_id": session_id,
@@ -125,7 +125,7 @@ async def step_session(request: ActionRequest):
         "action": request.action
     })
     
-    frame_base64 = frame_to_base64(frame)
+    frame_base64 = encode_frame_current(frame)
     
     return {
         "frame": frame_base64,
@@ -198,7 +198,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     "action": action
                 })
                 
-                frame_base64 = frame_to_base64(frame)
+                frame_base64 = encode_frame_current(frame)
                 
                 await websocket.send_json({
                     "type": "frame",
@@ -217,7 +217,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 sessions[session_id]["seed"] = seed
                 sessions[session_id]["actions"] = []
                 
-                frame_base64 = frame_to_base64(initial_frame)
+                frame_base64 = encode_frame_current(initial_frame)
                 
                 await websocket.send_json({
                     "type": "reset",
@@ -334,11 +334,11 @@ async def replay_session(req: ReplayRequest):
     )
     # Seed and generate initial frame
     initial = tmp_engine.generate_interactive(req.prompt, seed=req.seed)
-    frames = [frame_to_base64(initial)]
+    frames = [encode_frame_current(initial)]
     for act in req.actions:
         a = int(act.get("action", 0))
         frame, _ = tmp_engine.step(a)
-        frames.append(frame_to_base64(frame))
+        frames.append(encode_frame_current(frame))
     result = {"frames": frames, "count": len(frames)}
     if req.verify:
         # Rerun to check determinism (byte equality)
@@ -350,11 +350,11 @@ async def replay_session(req: ReplayRequest):
             batch_size=1,
         )
         initial2 = tmp2.generate_interactive(req.prompt, seed=req.seed)
-        frames2 = [frame_to_base64(initial2)]
+        frames2 = [encode_frame_current(initial2)]
         for act in req.actions:
             a = int(act.get("action", 0))
             f2, _ = tmp2.step(a)
-            frames2.append(frame_to_base64(f2))
+            frames2.append(encode_frame_current(f2))
         equal = len(frames2) == len(frames) and all(f1 == f2 for f1, f2 in zip(frames, frames2))
         result["verification"] = {"identical": equal}
     return result
@@ -400,7 +400,7 @@ async def batch_process(requests: list[ActionRequest]):
         
         response.append({
             "session_id": session_id,
-            "frame": frame_to_base64(frame),
+            "frame": encode_frame_current(frame),
             "frame_number": sessions[session_id]["frames_generated"]
         })
     
@@ -419,6 +419,17 @@ def base64_to_frame(base64_str: str) -> np.ndarray:
     img_data = base64.b64decode(base64_str)
     img = Image.open(io.BytesIO(img_data))
     return np.array(img)
+
+def encode_frame_current(frame: np.ndarray) -> str:
+    """Apply current settings (e.g., resolution) before encoding."""
+    try:
+        target = _settings.resolution if isinstance(_settings.resolution, int) else 256
+    except Exception:
+        target = 256
+    if frame.shape[0] != target or frame.shape[1] != target:
+        img = Image.fromarray(frame.astype('uint8')).resize((target, target), Image.BILINEAR)
+        return frame_to_base64(np.array(img))
+    return frame_to_base64(frame)
 
 
 if __name__ == "__main__":

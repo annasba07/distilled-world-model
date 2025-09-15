@@ -21,6 +21,7 @@ const timeline = document.getElementById('timeline');
 const themeToggle = document.getElementById('themeToggle');
 const toast = document.getElementById('toast');
 const recBadge = document.getElementById('recBadge');
+const qualityBanner = document.getElementById('qualityBanner');
 const modelsSelect = document.getElementById('modelsSelect');
 const btnLoadModel = document.getElementById('btnLoadModel');
 const currentModelEl = document.getElementById('currentModel');
@@ -324,6 +325,7 @@ function loadSettings() {
   if (s.resolution) settingResolution.value = String(s.resolution);
   if (s.fps_target) settingFps.value = s.fps_target;
   settingOverlay.checked = s.overlay !== false;
+  updateQualityBanner();
 }
 async function saveSettings() {
   const s = {
@@ -336,6 +338,7 @@ async function saveSettings() {
     await fetch(`${API_URL}/settings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(s) });
     showToast('Settings saved');
   } catch (e) { console.warn('Failed to save settings', e); }
+  updateQualityBanner();
 }
 loadSettings();
 settingResolution.addEventListener('change', saveSettings);
@@ -348,6 +351,13 @@ function applyQuery() {
   if (s) seedEl.value = s;
 }
 applyQuery();
+
+function updateQualityBanner() {
+  const res = Number(settingResolution.value);
+  if (!qualityBanner) return;
+  qualityBanner.textContent = `Quality: ${res}×${res}`;
+  qualityBanner.classList.toggle('hidden', res >= 256);
+}
 
 function startRecording() {
   try {
