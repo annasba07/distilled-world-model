@@ -319,6 +319,7 @@ class ReplayRequest(BaseModel):
     actions: List[Dict[str, Any]]
     model: Optional[str] = None
     settings: Optional[Dict[str, Any]] = None
+    verify: Optional[bool] = False
 
 
 @app.post("/session/replay")
@@ -338,7 +339,25 @@ async def replay_session(req: ReplayRequest):
         a = int(act.get("action", 0))
         frame, _ = tmp_engine.step(a)
         frames.append(frame_to_base64(frame))
-    return {"frames": frames, "count": len(frames)}
+    result = {"frames": frames, "count": len(frames)}
+    if req.verify:
+        # Rerun to check determinism (byte equality)
+        tmp2 = BatchedInferenceEngine(
+            model_path=req.model or engine.model_path,
+            device="cpu",
+            use_tensorrt=False,
+            use_fp16=False,
+            batch_size=1,
+        )
+        initial2 = tmp2.generate_interactive(req.prompt, seed=req.seed)
+        frames2 = [frame_to_base64(initial2)]
+        for act in req.actions:
+            a = int(act.get("action", 0))
+            f2, _ = tmp2.step(a)
+            frames2.append(frame_to_base64(f2))
+        equal = len(frames2) == len(frames) and all(f1 == f2 for f1, f2 in zip(frames, frames2))
+        result["verification"] = {"identical": equal}
+    return result
 
 
 # Settings (minimal placeholder)
