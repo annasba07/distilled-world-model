@@ -320,6 +320,8 @@ class ReplayRequest(BaseModel):
     model: Optional[str] = None
     settings: Optional[Dict[str, Any]] = None
     verify: Optional[bool] = False
+    verify_mode: Optional[str] = "byte"  # 'byte' or 'ssim'
+    tolerance: Optional[float] = 0.98
 
 
 @app.post("/session/replay")
@@ -334,11 +336,16 @@ async def replay_session(req: ReplayRequest):
     )
     # Seed and generate initial frame
     initial = tmp_engine.generate_interactive(req.prompt, seed=req.seed)
-    frames = [encode_frame_current(initial)]
+    frames_np: List[np.ndarray] = []
+    resized0 = resize_frame_current(initial)
+    frames_np.append(resized0)
+    frames = [frame_to_base64(resized0)]
     for act in req.actions:
         a = int(act.get("action", 0))
         frame, _ = tmp_engine.step(a)
-        frames.append(encode_frame_current(frame))
+        r = resize_frame_current(frame)
+        frames.append(frame_to_base64(r))
+        frames_np.append(r)
     result = {"frames": frames, "count": len(frames)}
     if req.verify:
         # Rerun to check determinism (byte equality)
@@ -350,13 +357,32 @@ async def replay_session(req: ReplayRequest):
             batch_size=1,
         )
         initial2 = tmp2.generate_interactive(req.prompt, seed=req.seed)
-        frames2 = [encode_frame_current(initial2)]
+        frames2_np: List[np.ndarray] = []
+        resized02 = resize_frame_current(initial2)
+        frames2_np.append(resized02)
+        frames2 = [frame_to_base64(resized02)]
         for act in req.actions:
             a = int(act.get("action", 0))
             f2, _ = tmp2.step(a)
-            frames2.append(encode_frame_current(f2))
-        equal = len(frames2) == len(frames) and all(f1 == f2 for f1, f2 in zip(frames, frames2))
-        result["verification"] = {"identical": equal}
+            r2 = resize_frame_current(f2)
+            frames2.append(frame_to_base64(r2))
+            frames2_np.append(r2)
+        if (req.verify_mode or "byte").lower() == "ssim":
+            # Compute global SSIM per frame
+            vals = [compute_ssim(a, b) for a, b in zip(frames_np, frames2_np)]
+            min_ssim = float(min(vals)) if vals else 1.0
+            avg_ssim = float(sum(vals) / len(vals)) if vals else 1.0
+            tol = req.tolerance or 0.98
+            result["verification"] = {
+                "mode": "ssim",
+                "min_ssim": min_ssim,
+                "avg_ssim": avg_ssim,
+                "tolerance": tol,
+                "identical": min_ssim >= tol,
+            }
+        else:
+            equal = len(frames2) == len(frames) and all(f1 == f2 for f1, f2 in zip(frames, frames2))
+            result["verification"] = {"mode": "byte", "identical": equal}
     return result
 
 
@@ -430,6 +456,42 @@ def encode_frame_current(frame: np.ndarray) -> str:
         img = Image.fromarray(frame.astype('uint8')).resize((target, target), Image.BILINEAR)
         return frame_to_base64(np.array(img))
     return frame_to_base64(frame)
+
+def resize_frame_current(frame: np.ndarray) -> np.ndarray:
+    try:
+        target = _settings.resolution if isinstance(_settings.resolution, int) else 256
+    except Exception:
+        target = 256
+    if frame.shape[0] != target or frame.shape[1] != target:
+        img = Image.fromarray(frame.astype('uint8')).resize((target, target), Image.BILINEAR)
+        return np.array(img)
+    return frame
+
+def compute_ssim(a: np.ndarray, b: np.ndarray) -> float:
+    """Compute a simple global SSIM between two RGB uint8 images scaled to [0,1]."""
+    import numpy as _np
+    def to_gray(x: _np.ndarray) -> _np.ndarray:
+        if x.ndim == 3 and x.shape[2] >= 3:
+            r, g, bl = x[..., 0], x[..., 1], x[..., 2]
+            y = 0.299 * r + 0.587 * g + 0.114 * bl
+            return y
+        return x.astype(_np.float32)
+    x = to_gray(a.astype(_np.float32)) / 255.0
+    y = to_gray(b.astype(_np.float32)) / 255.0
+    x_mean = _np.mean(x)
+    y_mean = _np.mean(y)
+    x_var = _np.var(x)
+    y_var = _np.var(y)
+    cov = _np.mean((x - x_mean) * (y - y_mean))
+    C1 = (0.01 ** 2)
+    C2 = (0.03 ** 2)
+    numerator = (2 * x_mean * y_mean + C1) * (2 * cov + C2)
+    denominator = (x_mean ** 2 + y_mean ** 2 + C1) * (x_var + y_var + C2)
+    if denominator == 0:
+        return 1.0 if numerator == 0 else 0.0
+    val = float(numerator / denominator)
+    # Clamp to [0,1]
+    return max(0.0, min(1.0, val))
 
 
 if __name__ == "__main__":
