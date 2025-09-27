@@ -5,6 +5,10 @@ from fastapi.testclient import TestClient
 
 def get_app_cpu():
     os.environ["LWM_DEVICE"] = "cpu"
+    os.environ["LWM_TEST_FAST"] = "1"
+    os.environ["LWM_ENABLE_TOY_WORLD"] = "1"
+    os.environ["LWM_FP16"] = "false"
+    os.environ["LWM_TENSORRT"] = "false"
     # Reload module to pick up env
     import src.api.server as server
     importlib.reload(server)
