@@ -206,7 +206,7 @@ async def create_session(request: InitRequest, background_tasks: BackgroundTasks
         memory_report = memory_manager.get_memory_report()
         pressure = memory_report.get('pressure', 0.0)
 
-        if pressure > 0.8:
+        if pressure > 0.99:  # Only block at 99% to allow high-baseline systems
             raise HTTPException(
                 status_code=503,
                 detail=f"Service temporarily unavailable due to high memory usage ({pressure:.2f})"

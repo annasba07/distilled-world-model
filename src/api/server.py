@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -18,7 +20,44 @@ from ..utils.logging import get_logger
 from .. import config as cfg
 
 
-app = FastAPI(title="Lightweight World Model API", version="0.1.0")
+engine: Optional[BatchedInferenceEngine] = None
+sessions: Dict[str, Dict[str, Any]] = {}
+logger = get_logger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global engine
+
+    engine = BatchedInferenceEngine(
+        model_path=cfg.DEFAULT_WORLD_MODEL_CKPT,
+        device=("cuda" if torch.cuda.is_available() else "cpu") if cfg.DEVICE == "cuda" else cfg.DEVICE,
+        use_tensorrt=cfg.USE_TENSORRT and torch.cuda.is_available(),
+        use_fp16=cfg.USE_FP16 and torch.cuda.is_available(),
+        batch_size=cfg.BATCH_SIZE,
+    )
+    logger.info("World Model Engine loaded successfully")
+
+    try:
+        app.mount(
+            "/demo",
+            StaticFiles(directory=str((cfg.PROJECT_ROOT / "demo").resolve()), html=True),
+            name="demo",
+        )
+        logger.info("Mounted static demo at /demo")
+    except Exception as exc:
+        logger.warning("Could not mount demo static files: %s", exc)
+
+    try:
+        yield
+    finally:
+        if engine is not None:
+            for session_id in list(sessions.keys()):
+                engine.stop_session(session_id)
+            engine = None
+
+
+app = FastAPI(title="Lightweight World Model API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,10 +66,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-engine = None
-sessions = {}
-logger = get_logger(__name__)
 
 
 class InitRequest(BaseModel):
@@ -50,25 +85,6 @@ class SessionInfo(BaseModel):
     current_fps: float
 
 
-@app.on_event("startup")
-async def startup_event():
-    global engine
-    engine = BatchedInferenceEngine(
-        model_path=cfg.DEFAULT_WORLD_MODEL_CKPT,
-        device=("cuda" if torch.cuda.is_available() else "cpu") if cfg.DEVICE == "cuda" else cfg.DEVICE,
-        use_tensorrt=cfg.USE_TENSORRT and torch.cuda.is_available(),
-        use_fp16=cfg.USE_FP16 and torch.cuda.is_available(),
-        batch_size=cfg.BATCH_SIZE,
-    )
-    logger.info("World Model Engine loaded successfully")
-    # Mount static demo at /demo (best-effort)
-    try:
-        app.mount("/demo", StaticFiles(directory=str((cfg.PROJECT_ROOT / "demo").resolve()), html=True), name="demo")
-        logger.info("Mounted static demo at /demo")
-    except Exception as e:
-        logger.warning("Could not mount demo static files: %s", e)
-
-
 @app.get("/")
 async def root():
     # Redirect to demo UI if available
@@ -81,10 +97,12 @@ async def root():
 @app.post("/session/create")
 async def create_session(request: InitRequest):
     session_id = str(uuid.uuid4())
-    
-    engine.create_session(session_id)
-    
-    initial_frame = engine.generate_interactive(request.prompt, seed=request.seed)
+
+    try:
+        initial_frame = engine.start_session(session_id, prompt=request.prompt, seed=request.seed)
+    except Exception as e:
+        logger.exception("Failed to start session %s: %s", session_id, e)
+        raise HTTPException(status_code=500, detail="Engine initialization failed")
     
     sessions[session_id] = {
         "created_at": datetime.now().isoformat(),
@@ -94,9 +112,8 @@ async def create_session(request: InitRequest):
         "seed": request.seed,
         "actions": []
     }
-    
     frame_base64 = encode_frame_current(initial_frame)
-    
+
     return {
         "session_id": session_id,
         "initial_frame": frame_base64,
@@ -113,7 +130,9 @@ async def step_session(request: ActionRequest):
         raise HTTPException(status_code=400, detail="Invalid action value; expected 0-255 integer")
     
     try:
-        frame, metrics = engine.step(request.action)
+        frame, metrics = engine.step_session(request.session_id, request.action)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not initialized")
     except Exception as e:
         logger.exception("Error stepping session: %s", e)
         raise HTTPException(status_code=500, detail="Engine step failed")
@@ -140,7 +159,7 @@ async def delete_session(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     
     del sessions[session_id]
-    engine.stop()
+    engine.stop_session(session_id)
     
     return {"status": "deleted", "session_id": session_id}
 
@@ -171,7 +190,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     await websocket.accept()
     
     if session_id not in sessions:
-        engine.create_session(session_id)
         sessions[session_id] = {
             "created_at": datetime.now().isoformat(),
             "frames_generated": 0,
@@ -188,9 +206,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             
             if message["type"] == "action":
                 action = message["action"]
-                
-                frame, metrics = engine.step(action)
-                
+                if not engine.is_session_running(session_id):
+                    session_meta = sessions.get(session_id, {})
+                    engine.start_session(
+                        session_id,
+                        prompt=session_meta.get("prompt"),
+                        seed=session_meta.get("seed"),
+                    )
+
+                frame, metrics = engine.step_session(session_id, action)
+
                 sessions[session_id]["frames_generated"] += 1
                 sessions[session_id]["current_fps"] = metrics["fps"]
                 sessions[session_id]["actions"].append({
@@ -210,7 +235,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             elif message["type"] == "reset":
                 prompt = message.get("prompt", None)
                 seed = message.get("seed", None)
-                initial_frame = engine.generate_interactive(prompt, seed=seed)
+                initial_frame = engine.start_session(session_id, prompt=prompt, seed=seed)
                 
                 sessions[session_id]["frames_generated"] = 1
                 sessions[session_id]["prompt"] = prompt
@@ -335,17 +360,19 @@ async def replay_session(req: ReplayRequest):
         batch_size=1,
     )
     # Seed and generate initial frame
-    initial = tmp_engine.generate_interactive(req.prompt, seed=req.seed)
+    replay_session_id = "replay-primary"
+    initial = tmp_engine.start_session(replay_session_id, prompt=req.prompt, seed=req.seed)
     frames_np: List[np.ndarray] = []
     resized0 = resize_frame_current(initial)
     frames_np.append(resized0)
     frames = [frame_to_base64(resized0)]
     for act in req.actions:
         a = int(act.get("action", 0))
-        frame, _ = tmp_engine.step(a)
+        frame, _ = tmp_engine.step_session(replay_session_id, a)
         r = resize_frame_current(frame)
         frames.append(frame_to_base64(r))
         frames_np.append(r)
+    tmp_engine.stop_session(replay_session_id)
     result = {"frames": frames, "count": len(frames)}
     if req.verify:
         # Rerun to check determinism (byte equality)
@@ -356,17 +383,19 @@ async def replay_session(req: ReplayRequest):
             use_fp16=False,
             batch_size=1,
         )
-        initial2 = tmp2.generate_interactive(req.prompt, seed=req.seed)
+        replay_secondary_id = "replay-verify"
+        initial2 = tmp2.start_session(replay_secondary_id, prompt=req.prompt, seed=req.seed)
         frames2_np: List[np.ndarray] = []
         resized02 = resize_frame_current(initial2)
         frames2_np.append(resized02)
         frames2 = [frame_to_base64(resized02)]
         for act in req.actions:
             a = int(act.get("action", 0))
-            f2, _ = tmp2.step(a)
+            f2, _ = tmp2.step_session(replay_secondary_id, a)
             r2 = resize_frame_current(f2)
             frames2.append(frame_to_base64(r2))
             frames2_np.append(r2)
+        tmp2.stop_session(replay_secondary_id)
         if (req.verify_mode or "byte").lower() == "ssim":
             # Compute global SSIM per frame
             vals = [compute_ssim(a, b) for a, b in zip(frames_np, frames2_np)]
@@ -410,20 +439,38 @@ async def set_settings(s: Settings):
 
 @app.post("/batch/process")
 async def batch_process(requests: list[ActionRequest]):
+    def ensure_session_meta(session_id: str) -> None:
+        if session_id not in sessions:
+            sessions[session_id] = {
+                "created_at": datetime.now().isoformat(),
+                "frames_generated": 0,
+                "current_fps": 0,
+                "prompt": None,
+                "seed": None,
+                "actions": [],
+            }
+
     batch_requests = [
         {"session_id": req.session_id, "action": req.action}
         for req in requests
     ]
-    
+    for req in requests:
+        ensure_session_meta(req.session_id)
+
     results = engine.process_batch(batch_requests)
-    
+
     response = []
-    for result in results:
+    for idx, result in enumerate(results):
         session_id = result["session_id"]
         frame = result["frame"]
-        
+
         sessions[session_id]["frames_generated"] += 1
-        
+        if idx < len(requests):
+            sessions[session_id]["actions"].append({
+                "t": datetime.now().isoformat(),
+                "action": requests[idx].action,
+            })
+
         response.append({
             "session_id": session_id,
             "frame": encode_frame_current(frame),
