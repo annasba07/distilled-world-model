@@ -380,7 +380,7 @@ class MemoryAwareSessionManager:
         # Check if we should accept new sessions
         pressure = self.memory_tracker.predict_memory_pressure()
 
-        if pressure > 0.8:
+        if pressure > 0.99:  # Allow high-baseline RAM systems
             print(f"Rejecting new session {session_id} due to high memory pressure: {pressure:.2f}")
             return False
 

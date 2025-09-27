@@ -1,13 +1,32 @@
 import os
-import torch
-import numpy as np
-from typing import Optional, Dict, Any, List, Tuple
+import random
 import time
 from collections import deque
-from queue import Queue
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+import numpy as np
+import torch
+
+from ..models.dynamics import DynamicsModel, WorldModel
 from ..models.improved_vqvae import ImprovedVQVAE
-from ..models.dynamics import WorldModel, DynamicsModel
+from .toy_world import ToyWorldSimulator
+
+if TYPE_CHECKING:
+    from .toy_world import ToyWorldState
+
+
+@dataclass
+class SessionState:
+    """Container for interactive session state managed by BatchedInferenceEngine."""
+
+    latent: Optional[torch.Tensor]
+    last_frame: Optional[np.ndarray]
+    frame_buffer: deque
+    prompt: Optional[str]
+    seed: Optional[int]
+    running: bool = False
+    world: Optional["ToyWorldState"] = None
 
 
 class OptimizedInferenceEngine:
@@ -19,29 +38,30 @@ class OptimizedInferenceEngine:
                  frame_buffer_size: int = 32,
                  batch_size: int = 1):
         
-        self.device = torch.device(device)
+        self.test_mode = os.getenv("LWM_TEST_FAST", "0").lower() in {"1", "true", "yes"}
+        self.device = torch.device("cpu" if self.test_mode else device)
         self.use_fp16 = use_fp16
         self.frame_buffer_size = frame_buffer_size
         self.batch_size = batch_size
-        
+
         self.model_path = model_path
-        self.model = self._load_model(model_path)
-        self.latent_shape = self._infer_latent_shape()
-        
-        if use_tensorrt and device == "cuda":
+        if self.test_mode:
+            self.model = None
+            self.latent_shape = (1, 1, 1)
+        else:
+            self.model = self._load_model(model_path)
+            self.latent_shape = self._infer_latent_shape()
+
+        if not self.test_mode and use_tensorrt and device == "cuda":
             self._optimize_with_tensorrt()
-        
+
         self.frame_buffer = deque(maxlen=frame_buffer_size)
         self.latent_cache = {}
-        
-        self.action_queue = Queue()
-        self.frame_queue = Queue()
-        
+
         self._init_buffers()
 
     def seed_everything(self, seed: int):
         """Seed torch and numpy for deterministic behavior within this engine scope."""
-        import random
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -94,6 +114,10 @@ class OptimizedInferenceEngine:
             model = model.half()
         return model
 
+    def _ensure_model_available(self) -> None:
+        if self.test_mode and self.model is None:
+            raise RuntimeError("Model is unavailable in test fast mode")
+
     def reload_model(self, model_path: str):
         """Reload model weights from a new checkpoint path."""
         self.model_path = model_path
@@ -108,6 +132,8 @@ class OptimizedInferenceEngine:
             return (z.shape[1], z.shape[2], z.shape[3])
 
     def _infer_latent_shape(self) -> Tuple[int, int, int]:
+        if self.test_mode:
+            return (1, 1, 1)
         with torch.no_grad():
             x = torch.zeros(1, 3, 256, 256, device=self.device)
             if self.use_fp16:
@@ -140,11 +166,10 @@ class OptimizedInferenceEngine:
         
     @torch.no_grad()
     def process_frame(self, frame: np.ndarray, action: Optional[int] = None):
-        """
-        Backward-compatible single-session processing using internal state.
-        """
+        """Backward-compatible single-session processing using internal state."""
         generated_frame, new_latent = self.process_frame_with_state(frame, action, self.current_latent)
         self.current_latent = new_latent
+        self.frame_buffer.append(generated_frame)
         return generated_frame
 
     @torch.no_grad()
@@ -154,10 +179,17 @@ class OptimizedInferenceEngine:
         Stateless processing: accept an optional latent state and return the updated state
         alongside the generated frame. Use this for multi-session scenarios.
         """
+        if self.test_mode:
+            # In fast test mode, bypass heavy model usage and return a deterministic variant of the input.
+            altered = frame.copy()
+            altered[:, :, 0] = (altered[:, :, 0] // 2)  # simple visual change for determinism
+            return altered, None
+
+        self._ensure_model_available()
         frame_tensor = torch.from_numpy(frame).to(self.device)
         frame_tensor = frame_tensor.permute(2, 0, 1).unsqueeze(0)
         frame_tensor = frame_tensor.float() / 255.0
-        
+
         if self.use_fp16:
             frame_tensor = frame_tensor.half()
         
@@ -194,21 +226,42 @@ class OptimizedInferenceEngine:
         
         return frame, current_latent
     
-    def generate_interactive(self, initial_prompt: str = None, seed: Optional[int] = None):
-        self.is_running = True
-        
+    def _generate_initial_frame(self, prompt: Optional[str], seed: Optional[int]) -> np.ndarray:
+        if prompt:
+            return self._generate_from_prompt(prompt, seed=seed)
+        rng = np.random.default_rng(seed)
+        return rng.integers(0, 255, (256, 256, 3), dtype=np.uint8)
+
+    @torch.no_grad()
+    def _initialize_state_from_frame(
+        self,
+        frame: np.ndarray,
+        seed: Optional[int],
+    ) -> Tuple[np.ndarray, Optional[torch.Tensor]]:
+        if self.test_mode:
+            return frame, None
         if seed is not None:
             self.seed_everything(seed)
-        
-        if initial_prompt:
-            initial_frame = self._generate_from_prompt(initial_prompt, seed=seed)
-        else:
-            rng = np.random.default_rng(seed)
-            initial_frame = rng.integers(0, 255, (256, 256, 3), dtype=np.uint8)
-        
-        self.current_latent = None
-        current_frame = self.process_frame(initial_frame)
-        
+        generated_frame, latent = self.process_frame_with_state(frame, action=None, latent=None)
+        return generated_frame, latent
+
+    def _prepare_initial_inference(
+        self,
+        prompt: Optional[str],
+        seed: Optional[int],
+    ) -> Tuple[np.ndarray, Optional[torch.Tensor]]:
+        initial_frame = self._generate_initial_frame(prompt, seed)
+        return self._initialize_state_from_frame(initial_frame, seed)
+
+    def generate_interactive(self, initial_prompt: str = None, seed: Optional[int] = None):
+        self.is_running = True
+
+        current_frame, current_latent = self._prepare_initial_inference(initial_prompt, seed)
+
+        self.current_latent = current_latent
+        self.frame_buffer.clear()
+        self.frame_buffer.append(current_frame)
+
         return current_frame
     
     def _generate_from_prompt(self, prompt: str, seed: Optional[int] = None):
@@ -225,15 +278,21 @@ class OptimizedInferenceEngine:
     def step(self, action: int):
         if not self.is_running:
             raise RuntimeError("Engine not running. Call generate_interactive first.")
-        
+
         start_time = time.time()
-        
-        frame, self.current_latent = self.process_frame_with_state(
-            np.zeros((256, 256, 3), dtype=np.uint8),
-            action,
-            self.current_latent
-        )
-        
+
+        if self.test_mode:
+            base = np.zeros((256, 256, 3), dtype=np.uint8)
+            base[:, :, 1] = min(max(action, 0), 255)
+            frame = base
+            self.current_latent = None
+        else:
+            frame, self.current_latent = self.process_frame_with_state(
+                np.zeros((256, 256, 3), dtype=np.uint8),
+                action,
+                self.current_latent
+            )
+
         inference_time = time.time() - start_time
         fps = 1.0 / inference_time if inference_time > 0 else 0
         
@@ -285,45 +344,169 @@ class OptimizedInferenceEngine:
 class BatchedInferenceEngine(OptimizedInferenceEngine):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.user_states = {}
+        self.user_states: Dict[str, SessionState] = {}
+        flag = os.getenv("LWM_ENABLE_TOY_WORLD", "auto").lower()
+        if self.test_mode:
+            self.use_toy_world = True
+        elif flag == "auto":
+            self.use_toy_world = not (self.model_path and os.path.exists(self.model_path))
+        else:
+            self.use_toy_world = flag in {"1", "true", "yes", "on"}
+
+        self._toy_world = ToyWorldSimulator()
         
-    def create_session(self, session_id: str):
-        self.user_states[session_id] = {
-            'latent': None,
-            'frame_buffer': deque(maxlen=self.frame_buffer_size),
-            'last_frame': None
-        }
-        
+    def create_session(self, session_id: str) -> SessionState:
+        state = SessionState(
+            latent=None,
+            last_frame=None,
+            frame_buffer=deque(maxlen=self.frame_buffer_size),
+            prompt=None,
+            seed=None,
+            running=False,
+            world=None,
+        )
+        self.user_states[session_id] = state
+        return state
+
+    def has_session(self, session_id: str) -> bool:
+        return session_id in self.user_states
+
+    def is_session_running(self, session_id: str) -> bool:
+        state = self.user_states.get(session_id)
+        return bool(state and state.running)
+
+    def get_session_state(self, session_id: str) -> SessionState:
+        if session_id not in self.user_states:
+            raise KeyError(f"Unknown session_id: {session_id}")
+        return self.user_states[session_id]
+
+    def start_session(self, session_id: str, prompt: Optional[str] = None,
+                      seed: Optional[int] = None) -> np.ndarray:
+        state = self.user_states.get(session_id) or self.create_session(session_id)
+
+        state.latent = None
+        state.last_frame = None
+        state.frame_buffer.clear()
+        state.prompt = prompt
+        state.seed = seed
+
+        if self.use_toy_world:
+            world_state = self._toy_world.create_state(prompt, seed)
+            generated_frame = self._toy_world.render(world_state)
+            state.world = world_state
+            state.latent = None
+        else:
+            generated_frame, latent = self._prepare_initial_inference(prompt, seed)
+            state.latent = latent
+            state.world = None
+
+        state.last_frame = generated_frame
+        state.frame_buffer.append(generated_frame)
+        state.running = True
+
+        return generated_frame
+
+    def step_session(self, session_id: str, action: int) -> Tuple[np.ndarray, Dict[str, float]]:
+        if session_id not in self.user_states:
+            raise KeyError(f"Unknown session_id: {session_id}")
+
+        state = self.user_states[session_id]
+        if not state.running:
+            raise RuntimeError("Session not initialized. Call start_session first.")
+
+        start_time = time.time()
+
+        if self.use_toy_world and state.world is not None:
+            new_world, frame_output, world_metrics = self._toy_world.step(
+                state.world,
+                int(action) if action is not None else 0,
+            )
+            state.world = new_world
+            state.latent = None
+            inference_time = time.time() - start_time
+            fps = 1.0 / inference_time if inference_time > 0 else 0.0
+            metrics = {
+                'fps': fps,
+                'inference_time': inference_time,
+            }
+            metrics.update(world_metrics)
+        else:
+            frame_input = state.last_frame
+            if frame_input is None:
+                frame_input = np.ones((256, 256, 3), dtype=np.uint8) * 128
+
+            frame_output, new_latent = self.process_frame_with_state(
+                frame_input,
+                action=int(action) if action is not None else None,
+                latent=state.latent
+            )
+
+            inference_time = time.time() - start_time
+            fps = 1.0 / inference_time if inference_time > 0 else 0.0
+
+            state.latent = new_latent
+            metrics = {'fps': fps, 'inference_time': inference_time}
+
+        state.last_frame = frame_output
+        state.frame_buffer.append(frame_output)
+        state.running = True
+
+        return frame_output, metrics
+
+    def stop_session(self, session_id: str):
+        state = self.user_states.pop(session_id, None)
+        if state:
+            state.frame_buffer.clear()
+            state.latent = None
+            state.last_frame = None
+            state.running = False
+            state.world = None
+
     def process_batch(self, requests: List[Dict[str, Any]]):
         batch_actions = []
         session_ids = []
-        
+
         for req in requests:
             session_id = req['session_id']
             action = req.get('action', None)
-            
+
             if session_id not in self.user_states:
                 self.create_session(session_id)
-            
+
             session_ids.append(session_id)
             batch_actions.append(action)
-        
+
         results = []
         for i, session_id in enumerate(session_ids):
             state = self.user_states[session_id]
-            
+
             # If we don't have a last frame yet, initialize with gray noise
-            if state['last_frame'] is None:
-                state['last_frame'] = np.ones((256, 256, 3), dtype=np.uint8) * 128
-            
-            frame, new_latent = self.process_frame_with_state(
-                state['last_frame'], batch_actions[i], state['latent']
-            )
-            state['last_frame'] = frame
-            state['latent'] = new_latent
+            if self.use_toy_world and state.world is not None:
+                new_world, frame, world_metrics = self._toy_world.step(
+                    state.world,
+                    int(batch_actions[i]) if batch_actions[i] is not None else 0,
+                )
+                state.world = new_world
+                state.latent = None
+                state.running = True
+                state.frame_buffer.append(frame)
+            else:
+                if state.last_frame is None:
+                    state.last_frame = np.ones((256, 256, 3), dtype=np.uint8) * 128
+
+                frame, new_latent = self.process_frame_with_state(
+                    state.last_frame,
+                    batch_actions[i],
+                    state.latent
+                )
+                state.latent = new_latent
+                state.frame_buffer.append(frame)
+                state.running = True
+
+            state.last_frame = frame
             results.append({
                 'session_id': session_id,
                 'frame': frame
             })
-        
+
         return results

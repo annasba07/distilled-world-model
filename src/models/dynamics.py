@@ -25,7 +25,7 @@ class MambaBlock(nn.Module):
             padding=d_conv - 1
         )
         
-        self.x_proj = nn.Linear(self.d_inner, self.d_state + self.d_state + 1)
+        self.x_proj = nn.Linear(self.d_inner, self.d_state + self.d_state + self.d_inner)
         self.dt_proj = nn.Linear(self.d_state, self.d_inner)
         
         A = repeat(torch.arange(1, self.d_state + 1), 'n -> d n', d=self.d_inner)
@@ -47,31 +47,33 @@ class MambaBlock(nn.Module):
         x = F.silu(x)
         
         deltaBu = self.x_proj(x)
-        delta, B, u = deltaBu.split([self.d_state, self.d_state, 1], dim=-1)
+        delta, B, u = deltaBu.split([self.d_state, self.d_state, self.d_inner], dim=-1)
         delta = F.softplus(self.dt_proj(delta))
-        
-        A = -torch.exp(self.A)
+
+        A = -torch.exp(self.A).unsqueeze(0).unsqueeze(0)
         deltaA = torch.exp(delta.unsqueeze(-1) * A)
         deltaB = delta.unsqueeze(-1) * B.unsqueeze(-2)
-        
+
         y = self.selective_scan(u, deltaA, deltaB)
-        
-        y = y + u * self.D
+
+        y = y + u * self.D.view(1, 1, -1)
         y = y * F.silu(z)
-        
+
         return self.out_proj(y)
-    
+
     def selective_scan(self, u, deltaA, deltaB):
-        batch, length, d_inner = u.shape[0], u.shape[1], deltaA.shape[2]
-        
-        x = torch.zeros(batch, self.d_state, d_inner, device=u.device)
+        batch, length, d_inner = u.shape
+        d_state = deltaA.shape[-1]
+
+        x = torch.zeros(batch, d_inner, d_state, device=u.device, dtype=u.dtype)
+        d_vec = self.D.view(1, d_inner, 1)
         ys = []
-        
+
         for i in range(length):
-            x = deltaA[:, i] * x + deltaB[:, i] * u[:, i:i+1]
-            y = (x * self.D).sum(dim=1)
+            x = deltaA[:, i] * x + deltaB[:, i] * u[:, i].unsqueeze(-1)
+            y = (x * d_vec).sum(dim=-1)
             ys.append(y)
-        
+
         return torch.stack(ys, dim=1)
 
 
@@ -117,9 +119,12 @@ class DynamicsModel(nn.Module):
             x = x + action_embeds
         
         if seq_len <= self.context_length:
-            x = x + self.pos_embed[:, :seq_len]
+            pos_embed = self.pos_embed[:, :seq_len]
         else:
-            x = x + self.pos_embed[:, :self.context_length]
+            extra_len = seq_len - self.context_length
+            extra = self.pos_embed[:, -1:].expand(-1, extra_len, -1)
+            pos_embed = torch.cat([self.pos_embed, extra], dim=1)[:, :seq_len]
+        x = x + pos_embed
         
         x = self.dropout(x)
         
@@ -136,19 +141,29 @@ class DynamicsModel(nn.Module):
     
     def generate(self, initial_latent, actions, num_steps):
         generated = [initial_latent]
-        
+        action_history = []
+
         for step in range(num_steps):
             context = torch.cat(generated[-self.context_length:], dim=1)
-            
+
             if actions is not None and step < actions.shape[1]:
-                current_action = actions[:, step:step+1]
+                action_step = actions[:, step:step+1]
+                action_history.append(action_step)
+
+            if action_history:
+                action_context = torch.cat(action_history[-context.size(1):], dim=1)
+                if action_context.shape[1] < context.size(1):
+                    pad_len = context.size(1) - action_context.shape[1]
+                    pad_value = action_context[:, -1:]
+                    pad = pad_value.repeat(1, pad_len)
+                    action_context = torch.cat([action_context, pad], dim=1)
             else:
-                current_action = None
-            
-            next_latent = self.forward(context, current_action)
+                action_context = None
+
+            next_latent = self.forward(context, action_context)
             next_latent = next_latent[:, -1:, :]
             generated.append(next_latent)
-        
+
         return torch.cat(generated[1:], dim=1)
 
 
