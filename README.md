@@ -54,6 +54,35 @@ python -m src.api.server
 python -m src.training.cli vqvae --data_dir datasets/raw --num_epochs 50
 ```
 
+### Collect Creative Commons YouTube Gameplay
+
+```bash
+python scripts/youtube_collector.py \
+  --api-key $YOUTUBE_API_KEY \
+  --query "pixel art platformer gameplay" \
+  --max-videos 50 \
+  --output-dir datasets/youtube \
+  --download-videos \
+  --extract-frames
+```
+
+The collector uses the official YouTube Data API, defaults to Creative Commons
+licensed results, and can optionally download source videos with `yt-dlp` and
+sample frames. Double-check every asset's license before using it for training
+and comply with YouTube's Terms of Service.
+
+### Batch Collect Platformer Dataset
+
+```bash
+python scripts/batch_collect.py --config configs/cc_platformers.yaml
+```
+
+The batch controller loads multiple search queries, rotates API keys, and
+keeps looping until each query meets its target hours. Edit the config to add
+your API keys (via environment variables), adjust target hours, and tweak
+collector flags. When metadata files grow large, clean duplicates with
+`python scripts/dedupe_metadata.py path/to/metadata.jsonl`.
+
 ### Demo (Reconstruction)
 
 ```bash

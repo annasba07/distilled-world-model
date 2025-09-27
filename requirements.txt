@@ -32,6 +32,9 @@ numpy>=1.24.0
 pandas>=2.0.0
 h5py>=3.9.0
 zarr>=2.16.0
+pyyaml>=6.0
+google-api-python-client>=2.120.0
+yt-dlp>=2023.7.6
 
 # API & Deployment
 fastapi>=0.100.0
@@ -57,3 +60,6 @@ pytest-asyncio>=0.21.0
 # Quantization
 bitsandbytes>=0.41.0
 quanto>=0.0.10
+
+# Enhanced System Dependencies
+psutil>=5.9.0
