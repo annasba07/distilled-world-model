@@ -1,0 +1,50 @@
+# Creative Commons platformer-focused gameplay collection plan.
+# Fill in environment variables listed under api_keys before running.
+api_keys:
+  - env: YOUTUBE_API_KEY
+  # - env: YOUTUBE_API_KEY_2
+
+output_root: datasets/cc_platformers
+
+global:
+  metadata_file: metadata.jsonl
+  download_videos: true
+  extract_frames: true
+  skip_existing: true
+  frame_interval: 0.5
+  frame_size: [256, 256]
+  max_frames: 1800
+  video_quality: bestvideo[height<=720]+bestaudio/best
+  max_videos_per_call: 75
+  sleep_seconds: 75
+  license: creativeCommon
+  video_duration: any
+  max_stall_runs: 4
+
+queries:
+  - name: pixel_platformers
+    query: "pixel art platformer gameplay"
+    target_hours: 150
+
+  - name: metroidvania_runs
+    query: "metroidvania gameplay creative commons"
+    target_hours: 150
+    video_duration: long
+
+  - name: retro_speedruns
+    query: "retro platformer speedrun creative commons"
+    target_hours: 120
+    video_duration: long
+
+  - name: roguelite_platformers
+    query: "roguelite platformer gameplay creative commons"
+    target_hours: 100
+
+  - name: puzzle_platformers
+    query: "puzzle platformer gameplay creative commons"
+    target_hours: 100
+
+  - name: action_platformers
+    query: "action platformer gameplay creative commons"
+    target_hours: 100
+
