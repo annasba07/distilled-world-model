@@ -27,6 +27,12 @@ htmlcov/
 *.jpeg
 *.gif
 
+# Model checkpoints (too large for git)
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+
 # Logs
 *.log
 
