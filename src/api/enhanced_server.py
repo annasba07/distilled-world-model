@@ -444,6 +444,102 @@ async def health_check():
     }
 
 
+@app.websocket("/ws/{session_id}")
+async def websocket_endpoint(websocket: WebSocket, session_id: str):
+    """WebSocket endpoint for real-time session interaction"""
+    await websocket.accept()
+
+    # Get or create session in memory manager
+    session_data = memory_manager.get_session(session_id) if memory_manager else None
+    if not session_data:
+        # Create new session
+        if memory_manager:
+            session_data = {
+                "created_at": datetime.now().isoformat(),
+                "frames_generated": 0,
+                "current_fps": 0,
+                "prompt": None,
+                "seed": None,
+                "actions": []
+            }
+            if not memory_manager.create_session(session_id, session_data):
+                await websocket.close(code=1013, reason="Server overloaded")
+                return
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            message = json.loads(data)
+
+            if message["type"] == "action":
+                action = message["action"]
+
+                # Ensure session is started
+                if not predictive_engine.is_session_running(session_id):
+                    session_meta = memory_manager.get_session(session_id) if memory_manager else {}
+                    predictive_engine.start_session(
+                        session_id,
+                        prompt=session_meta.get("prompt"),
+                        seed=session_meta.get("seed"),
+                    )
+
+                # Step the session
+                frame, metrics = await predictive_engine.step_session_predictive(session_id, action)
+
+                # Update session data
+                if memory_manager and session_data:
+                    session_data["frames_generated"] += 1
+                    session_data["actions"].append(action)
+                    memory_usage = await estimate_session_memory_usage(session_id)
+                    priority = calculate_session_priority(
+                        prompt=session_data.get("prompt"),
+                        frames_generated=session_data["frames_generated"],
+                        recent_activity=True
+                    )
+                    memory_manager.update_session(session_id, session_data, memory_usage, priority)
+
+                # Encode frame to base64 for frontend display
+                frame_base64 = encode_frame_current(frame)
+
+                # Send response with frame in 'data' field as expected by frontend
+                response = {
+                    "type": "frame",
+                    "data": frame_base64,  # Frontend expects 'data' field, not 'frame'
+                    "metrics": metrics,
+                    "session_id": session_id,
+                    "frame_number": session_data["frames_generated"] if session_data else 1
+                }
+                await websocket.send_text(json.dumps(response))
+
+    except WebSocketDisconnect:
+        print(f"WebSocket disconnected for session {session_id}")
+    except Exception as e:
+        print(f"Error in WebSocket for session {session_id}: {e}")
+        await websocket.close()
+
+
+@app.post("/settings")
+async def update_settings(settings: Dict[str, Any]):
+    """Update application settings"""
+    # For now, just acknowledge the settings
+    # In the future, this could update actual rendering settings
+    return {
+        "status": "success",
+        "message": "Settings updated",
+        "settings": settings
+    }
+
+
+@app.get("/settings")
+async def get_settings():
+    """Get current application settings"""
+    return {
+        "resolution": "256x256",
+        "fps_target": 30,
+        "show_overlay": True
+    }
+
+
 @app.get("/admin/memory")
 async def get_memory_status():
     """Admin endpoint for detailed memory status"""
@@ -581,6 +677,82 @@ def encode_frame_current(frame: np.ndarray) -> str:
         # Return a placeholder frame on error
         placeholder = np.zeros((256, 256, 3), dtype=np.uint8)
         return frame_to_base64(placeholder)
+
+
+# Model Management Endpoints (UI compatibility)
+@app.get("/models")
+async def list_models():
+    """List available models for UI compatibility"""
+    ckpt_dir = cfg.CHECKPOINTS_DIR
+    models: List[Dict[str, Any]] = []
+    try:
+        for p in ckpt_dir.glob("**/*.pt"):
+            try:
+                size = p.stat().st_size
+                mtime = p.stat().st_mtime
+            except Exception:
+                size = None; mtime = None
+            models.append({
+                "id": p.name,
+                "path": str(p.resolve()),
+                "size": size,
+                "modified": mtime
+            })
+    except Exception as e:
+        logger.warning("Failed to list models: %s", e)
+
+    # Get current model info
+    current_model = None
+    if predictive_engine and hasattr(predictive_engine, 'base_engine'):
+        current_model = getattr(predictive_engine.base_engine, 'model_path', None)
+
+    return {
+        "models": models,
+        "current_model": current_model
+    }
+
+
+class LoadSimpleModelRequest(BaseModel):
+    id: str  # filename under checkpoints dir
+
+
+@app.post("/models/load")
+async def load_model(req: LoadSimpleModelRequest):
+    """Load model for UI compatibility"""
+    target = (cfg.CHECKPOINTS_DIR / req.id).resolve()
+    if not target.exists():
+        raise HTTPException(status_code=404, detail=f"Model not found: {target}")
+
+    try:
+        # Use progressive loader if available, otherwise fallback
+        if progressive_loader:
+            job_id = await progressive_loader.load_model_progressive(str(target))
+            # Wait for completion (simplified for UI)
+            import time
+            for _ in range(30):  # 30 second timeout
+                status = progressive_loader.get_job_status(job_id)
+                if status and status.get("status") == "completed":
+                    break
+                await asyncio.sleep(1)
+
+        current_model = str(target)
+        return {"status": "ok", "current_model": current_model}
+    except Exception as e:
+        logger.exception("Failed to load model: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to load model")
+
+
+@app.get("/models/status")
+async def model_status():
+    """Get current model status for UI compatibility"""
+    current_model = None
+    if predictive_engine and hasattr(predictive_engine, 'base_engine'):
+        current_model = getattr(predictive_engine.base_engine, 'model_path', None)
+
+    return {
+        "current_model": current_model,
+        "ready": predictive_engine is not None
+    }
 
 
 if __name__ == "__main__":

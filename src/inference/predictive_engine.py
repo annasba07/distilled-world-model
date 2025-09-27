@@ -328,6 +328,31 @@ class PredictiveInferenceEngine:
             'actions_cached': list(cache.keys())
         }
 
+    def is_session_running(self, session_id: str) -> bool:
+        """Check if a session is running (proxy to base engine)"""
+        return self.base_engine.is_session_running(session_id)
+
+    def start_session(self, session_id: str, prompt: Optional[str] = None,
+                     seed: Optional[int] = None) -> np.ndarray:
+        """Start session (synchronous proxy for compatibility)"""
+        # Start the session normally
+        initial_frame = self.base_engine.start_session(session_id, prompt, seed)
+
+        # Initialize prediction for this session (create task for async)
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(self._start_prediction_for_session(session_id))
+        except RuntimeError:
+            pass  # No event loop, skip prediction
+
+        return initial_frame
+
+    def step_session(self, session_id: str, action: int) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """Step session (synchronous proxy for compatibility)"""
+        # Fallback to base engine for synchronous operation
+        return self.base_engine.step_session(session_id, action)
+
 
 # Integration helper for existing API
 def create_predictive_engine(*args, **kwargs) -> PredictiveInferenceEngine:
