@@ -298,30 +298,74 @@ class ImprovedVQVAE(nn.Module):
             nn.init.constant_(module.weight, 1)
             nn.init.constant_(module.bias, 0)
     
-    def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
+    def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        Encode images to quantized latent representations.
+
+        Args:
+            x: Input images (batch, channels, height, width)
+
+        Returns:
+            Tuple of (quantized latents, VQ statistics dict)
+        """
         z = self.encoder(x)
         z = rearrange(z, 'b c h w -> b h w c')
         quantized, vq_dict = self.vq(z)
         quantized = rearrange(quantized, 'b h w c -> b c h w')
         return quantized, vq_dict
-    
+
     def decode(self, quantized: torch.Tensor) -> torch.Tensor:
+        """
+        Decode quantized latents to images.
+
+        Args:
+            quantized: Quantized latent representations
+
+        Returns:
+            Reconstructed images (batch, channels, height, width)
+        """
         return self.decoder(quantized)
-    
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        Forward pass: encode, quantize, and decode.
+
+        Args:
+            x: Input images (batch, channels, height, width)
+
+        Returns:
+            Tuple of (reconstructed images, VQ statistics dict)
+        """
         quantized, vq_dict = self.encode(x)
         x_recon = self.decode(quantized)
-        
+
         return x_recon, vq_dict
-    
+
     @torch.no_grad()
     def reconstruct(self, x: torch.Tensor) -> torch.Tensor:
-        """Reconstruct input for demonstration"""
+        """
+        Reconstruct input images without gradients.
+
+        Args:
+            x: Input images (batch, channels, height, width)
+
+        Returns:
+            Reconstructed images
+        """
         quantized, _ = self.encode(x)
         return self.decode(quantized)
-    
-    def get_codebook_usage(self, dataloader, device='cuda'):
-        """Analyze codebook utilization"""
+
+    def get_codebook_usage(self, dataloader: Any, device: str = 'cuda') -> torch.Tensor:
+        """
+        Analyze codebook utilization across a dataset.
+
+        Args:
+            dataloader: PyTorch DataLoader
+            device: Device to run on ('cuda' or 'cpu')
+
+        Returns:
+            Normalized usage count per codebook entry
+        """
         usage_count = torch.zeros(self.vq.num_embeddings, device=device)
         
         for batch in dataloader:

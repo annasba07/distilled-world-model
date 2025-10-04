@@ -1,3 +1,19 @@
+"""
+Basic API Server for Lightweight World Model
+
+DEPRECATION NOTICE: This is the basic server implementation.
+For production use, consider using src.api.enhanced_server which includes:
+- Memory-aware session management
+- Predictive inference for zero-latency UX
+- Rate limiting
+- Advanced error recovery
+
+This basic server is maintained for:
+- Simple use cases
+- Testing
+- Backward compatibility
+"""
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException

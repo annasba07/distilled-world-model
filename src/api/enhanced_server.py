@@ -200,9 +200,22 @@ class SessionInfo(BaseModel):
 
 
 # Helper functions
-def calculate_session_priority(prompt: Optional[str], frames_generated: int,
-                             recent_activity: bool) -> float:
-    """Calculate session priority based on various factors"""
+def calculate_session_priority(
+    prompt: Optional[str],
+    frames_generated: int,
+    recent_activity: bool
+) -> float:
+    """
+    Calculate session priority based on various factors.
+
+    Args:
+        prompt: User-provided prompt (if any)
+        frames_generated: Number of frames generated so far
+        recent_activity: Whether session had recent activity
+
+    Returns:
+        Priority score between 0.1 and 2.0
+    """
     base_priority = 1.0
 
     # Boost priority for sessions with prompts (more intentional)
@@ -221,7 +234,15 @@ def calculate_session_priority(prompt: Optional[str], frames_generated: int,
 
 
 async def estimate_session_memory_usage(session_id: str) -> float:
-    """Estimate memory usage for a session in MB"""
+    """
+    Estimate memory usage for a session in MB.
+
+    Args:
+        session_id: Session identifier
+
+    Returns:
+        Estimated memory usage in MB (50-114 MB typical range)
+    """
     try:
         # Base memory per session (rough estimate)
         base_memory = 50.0  # MB
@@ -235,13 +256,18 @@ async def estimate_session_memory_usage(session_id: str) -> float:
             return base_memory + buffer_memory
 
         return base_memory
-    except:
+    except Exception:
         return 50.0  # Default estimate
 
 
 @app.get("/")
-async def root():
-    """Root endpoint with system status"""
+async def root() -> Dict[str, Any]:
+    """
+    Root endpoint with system status.
+
+    Returns:
+        System status including memory and session information
+    """
     try:
         memory_report = memory_manager.get_memory_report() if memory_manager else {}
         return {
@@ -257,8 +283,23 @@ async def root():
 
 
 @app.post("/session/create")
-async def create_session(request: InitRequest, background_tasks: BackgroundTasks):
-    """Create new session with memory management"""
+async def create_session(
+    request: InitRequest,
+    background_tasks: BackgroundTasks
+) -> Dict[str, Any]:
+    """
+    Create new session with memory management.
+
+    Args:
+        request: Session initialization request
+        background_tasks: FastAPI background tasks
+
+    Returns:
+        Session ID, initial frame, and metadata
+
+    Raises:
+        HTTPException: If memory limit exceeded or session creation fails
+    """
     session_id = str(uuid.uuid4())
 
     # Check memory pressure before creating session
@@ -330,8 +371,13 @@ async def create_session(request: InitRequest, background_tasks: BackgroundTasks
         raise HTTPException(status_code=500, detail=f"Session creation failed: {str(e)}")
 
 
-async def update_session_memory_usage(session_id: str):
-    """Background task to update session memory usage"""
+async def update_session_memory_usage(session_id: str) -> None:
+    """
+    Background task to update session memory usage.
+
+    Args:
+        session_id: Session identifier to update
+    """
     try:
         memory_usage = await estimate_session_memory_usage(session_id)
         session_data = memory_manager.get_session(session_id)
@@ -347,8 +393,24 @@ async def update_session_memory_usage(session_id: str):
 
 
 @app.post("/session/step")
-async def step_session(request: ActionRequest, background_tasks: BackgroundTasks):
-    """Step session with predictive inference and memory tracking"""
+async def step_session(
+    request: ActionRequest,
+    background_tasks: BackgroundTasks
+) -> Dict[str, Any]:
+    """
+    Step session with predictive inference and memory tracking.
+
+    Args:
+        request: Action request with session ID and action value
+        background_tasks: FastAPI background tasks
+
+    Returns:
+        Next frame and performance metrics
+
+    Raises:
+        SessionNotFoundError: If session doesn't exist
+        InvalidActionError: If action value is invalid
+    """
     session_data = memory_manager.get_session(request.session_id) if memory_manager else None
     if not session_data:
         raise SessionNotFoundError(f"Session {request.session_id} not found")
