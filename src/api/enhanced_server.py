@@ -12,11 +12,13 @@ from contextlib import asynccontextmanager
 import asyncio
 import time
 from typing import Optional, List, Dict, Any
+from collections import defaultdict
+from datetime import datetime, timedelta
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from starlette.responses import RedirectResponse
+from starlette.responses import RedirectResponse, JSONResponse
 from pydantic import BaseModel, Field
 import numpy as np
 import base64
@@ -24,13 +26,20 @@ import io
 from PIL import Image
 import json
 import uuid
-from datetime import datetime
 import torch
 
 from ..inference.engine import BatchedInferenceEngine
 from ..inference.predictive_engine import PredictiveInferenceEngine, create_predictive_engine
 from ..utils.memory_manager import MemoryAwareSessionManager
 from ..utils.logging import get_logger
+from ..utils.exceptions import (
+    SessionNotFoundError,
+    SessionCreationError,
+    SessionLimitError,
+    MemoryError as WMMemoryError,
+    InvalidActionError,
+    InferenceError
+)
 from .model_loading import ProgressiveModelLoader, LoadModelRequest, LoadModelResponse, JobStatusResponse
 from .. import config as cfg
 
@@ -40,6 +49,36 @@ predictive_engine: Optional[PredictiveInferenceEngine] = None
 memory_manager: Optional[MemoryAwareSessionManager] = None
 progressive_loader = None
 logger = get_logger(__name__)
+
+
+# Simple rate limiter
+class RateLimiter:
+    """Simple in-memory rate limiter"""
+    def __init__(self, requests: int = 100, window: int = 60):
+        self.requests = requests
+        self.window = window
+        self.clients: Dict[str, List[datetime]] = defaultdict(list)
+
+    def is_allowed(self, client_id: str) -> bool:
+        """Check if request is allowed"""
+        now = datetime.now()
+        cutoff = now - timedelta(seconds=self.window)
+
+        # Clean old requests
+        self.clients[client_id] = [
+            req_time for req_time in self.clients[client_id]
+            if req_time > cutoff
+        ]
+
+        # Check limit
+        if len(self.clients[client_id]) >= self.requests:
+            return False
+
+        # Add request
+        self.clients[client_id].append(now)
+        return True
+
+rate_limiter = RateLimiter(requests=cfg.RATE_LIMIT_REQUESTS, window=cfg.RATE_LIMIT_WINDOW)
 
 
 @asynccontextmanager
@@ -54,10 +93,10 @@ async def lifespan(app: FastAPI):
 
         # Initialize memory manager
         memory_manager = MemoryAwareSessionManager(
-            max_sessions=100,
-            ttl_seconds=3600,  # 1 hour TTL
-            memory_check_interval=30,  # Check every 30 seconds
-            max_memory_gb=3.5  # 3.5GB GPU memory limit
+            max_sessions=cfg.MAX_SESSIONS,
+            ttl_seconds=cfg.SESSION_TTL_SECONDS,
+            memory_check_interval=cfg.MEMORY_CHECK_INTERVAL,
+            max_memory_gb=cfg.MAX_GPU_MEMORY_GB
         )
 
         # Start memory monitoring
@@ -115,6 +154,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Rate limiting middleware
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    """Apply rate limiting to API requests"""
+    # Skip rate limiting for static files and health checks
+    if request.url.path.startswith("/demo") or request.url.path == "/":
+        return await call_next(request)
+
+    # Get client identifier (IP address)
+    client_ip = request.client.host if request.client else "unknown"
+
+    # Check rate limit
+    if not rate_limiter.is_allowed(client_ip):
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded. Please try again later."}
+        )
+
+    return await call_next(request)
 
 
 # Enhanced request models
@@ -207,9 +267,8 @@ async def create_session(request: InitRequest, background_tasks: BackgroundTasks
         pressure = memory_report.get('pressure', 0.0)
 
         if pressure > 0.99:  # Only block at 99% to allow high-baseline systems
-            raise HTTPException(
-                status_code=503,
-                detail=f"Service temporarily unavailable due to high memory usage ({pressure:.2f})"
+            raise WMMemoryError(
+                f"Service temporarily unavailable due to high memory usage ({pressure:.2f})"
             )
 
     try:
@@ -242,9 +301,8 @@ async def create_session(request: InitRequest, background_tasks: BackgroundTasks
             if not success:
                 # Cleanup and raise error
                 predictive_engine.stop_session_predictive(session_id)
-                raise HTTPException(
-                    status_code=503,
-                    detail="Cannot create session due to resource constraints"
+                raise SessionLimitError(
+                    "Cannot create session due to resource constraints"
                 )
 
             # Schedule memory usage estimation
@@ -259,12 +317,17 @@ async def create_session(request: InitRequest, background_tasks: BackgroundTasks
             "priority": priority
         }
 
+    except (WMMemoryError, SessionLimitError) as e:
+        # Cleanup on resource constraint failures
+        if predictive_engine:
+            predictive_engine.stop_session_predictive(session_id)
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.exception("Failed to start session %s: %s", session_id, e)
         # Cleanup on failure
         if predictive_engine:
             predictive_engine.stop_session_predictive(session_id)
-        raise HTTPException(status_code=500, detail="Session creation failed")
+        raise HTTPException(status_code=500, detail=f"Session creation failed: {str(e)}")
 
 
 async def update_session_memory_usage(session_id: str):
@@ -288,11 +351,11 @@ async def step_session(request: ActionRequest, background_tasks: BackgroundTasks
     """Step session with predictive inference and memory tracking"""
     session_data = memory_manager.get_session(request.session_id) if memory_manager else None
     if not session_data:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise SessionNotFoundError(f"Session {request.session_id} not found")
 
     # Validate action range
     if request.action < 0 or request.action > 255:
-        raise HTTPException(status_code=400, detail="Invalid action value; expected 0-255 integer")
+        raise InvalidActionError(f"Invalid action value {request.action}; expected 0-255 integer")
 
     try:
         # Use predictive inference for instant response
