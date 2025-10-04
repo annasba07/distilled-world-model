@@ -46,9 +46,10 @@ class SessionMetrics:
 class MemoryTracker:
     """Tracks memory usage patterns and predicts resource needs"""
 
-    def __init__(self, history_size: int = 100):
+    def __init__(self, history_size: int = 100, max_gpu_memory_gb: float = 4.0):
         self.history: List[MemoryStats] = []
         self.history_size = history_size
+        self.max_gpu_memory_gb = max_gpu_memory_gb
         self.lock = threading.Lock()
 
     def get_current_stats(self, session_count: int = 0) -> MemoryStats:
@@ -102,7 +103,7 @@ class MemoryTracker:
         latest = self.history[-1]
 
         # GPU memory pressure
-        gpu_pressure = min(latest.gpu_allocated_gb / 4.0, 1.0)  # 4GB target
+        gpu_pressure = min(latest.gpu_allocated_gb / self.max_gpu_memory_gb, 1.0)
 
         # System memory pressure
         ram_pressure = latest.system_ram_percent / 100.0
@@ -319,7 +320,7 @@ class MemoryAwareSessionManager:
     def __init__(self, max_sessions: int = 50, ttl_seconds: int = 3600,
                  memory_check_interval: int = 30, max_memory_gb: float = 3.5):
         self.cache = LRUSessionCache(max_sessions, ttl_seconds)
-        self.memory_tracker = MemoryTracker()
+        self.memory_tracker = MemoryTracker(max_gpu_memory_gb=max_memory_gb)
         self.max_memory_gb = max_memory_gb
         self.memory_check_interval = memory_check_interval
 
