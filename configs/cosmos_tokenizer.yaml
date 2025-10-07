@@ -1,0 +1,100 @@
+# Cosmos-Inspired Tokenizer Configuration
+# Based on NVIDIA Cosmos and MAGVIT-v2 research (October 2025)
+
+# Model architecture
+model:
+  in_channels: 3
+
+  # Encoder architecture (progressive downsampling)
+  encoder_dims:
+    - 64
+    - 128
+    - 256
+    - 512
+
+  # Decoder architecture (progressive upsampling)
+  decoder_dims:
+    - 256
+    - 128
+    - 64
+    - 32
+
+  # Latent space
+  latent_dim: 512
+
+  # Codebook (2^16 = 65,536 codes)
+  codebook_size: 65536
+
+  # Target resolution
+  resolution:
+    - 640
+    - 360
+
+  # Perceptual loss (requires lpips package)
+  use_perceptual_loss: false
+
+# Training settings
+training:
+  # Optimization
+  epochs: 100
+  batch_size: 4
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+
+  # Learning rate schedule
+  lr_scheduler: cosine
+  lr_min: 1.0e-6
+  warmup_epochs: 5
+
+  # Gradient clipping
+  grad_clip: 1.0
+
+  # Video settings
+  num_frames: 8
+  frame_skip: 1  # Sample every N frames
+
+  # Augmentation
+  random_crop: true
+  random_flip: true
+  color_jitter: false
+
+# Data settings
+data:
+  # Dataset path
+  train_dir: /path/to/train/videos
+  val_dir: /path/to/val/videos
+
+  # Data loading
+  num_workers: 4
+  pin_memory: true
+  prefetch_factor: 2
+
+  # For synthetic data (testing)
+  synthetic: true
+  num_synthetic_samples: 1000
+
+# Checkpointing
+checkpointing:
+  checkpoint_dir: checkpoints/cosmos_tokenizer
+  save_freq: 10  # Save every N epochs
+  keep_last_n: 5  # Keep last N checkpoints
+
+# Logging
+logging:
+  log_dir: logs/cosmos_tokenizer
+  log_freq: 10  # Log every N batches
+  save_visualizations: true
+  visualize_freq: 100  # Visualize every N batches
+
+# System
+system:
+  device: cuda  # cuda or cpu
+  mixed_precision: false  # fp16 training
+  compile: false  # torch.compile (requires PyTorch 2.0+)
+
+# Target performance (from NVIDIA Cosmos paper)
+targets:
+  compression_ratio: 8.0  # 8x better than VQ-VAE
+  encoding_speedup: 12.0  # 12x faster encoding
+  codebook_usage: 0.90  # >90% codebook utilization
+  perplexity: 50000  # High perplexity = good usage
