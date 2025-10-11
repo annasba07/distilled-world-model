@@ -67,31 +67,71 @@ Phase 1 implemented four major upgrades over 4 weeks, achieving a **320x perform
 
 ## 🏆 Performance Achievements
 
-### All Targets Met ✅
+### Real-World Testing Results
 
-| Metric | Target | Achieved | Status |
-|--------|--------|----------|--------|
-| Compression Ratio | 8x better | 8.0x | ✅ |
-| Encoding Speed | 12x faster | 12.0x | ✅ |
-| Codebook Usage | >90% | 92% | ✅ |
-| Generation Speed | 10x faster | 10.67x | ✅ |
-| Memory Savings | >50% | 70% | ✅ |
-| Max Video Length | 60+ sec | 80 sec | ✅ |
-| FPS @ 640×360 | 40-50 | 42+ | ✅ |
-| Optimization | 4x | 4.1x | ✅ |
+**Testing Hardware**: Apple M4 Max (MPS), PyTorch 2.8.0
+**Testing Date**: October 2025
+**Full Report**: [REAL_WORLD_TESTING_REPORT.md](REAL_WORLD_TESTING_REPORT.md)
 
-### Cumulative Improvements
+| Metric | Target | M4 Max (Tested) | CUDA (Expected) | Status |
+|--------|--------|-----------------|-----------------|--------|
+| **Compression Ratio** | 8x better | **32x** ✅ | 32x | ✅ VERIFIED |
+| **Shape Preservation** | Exact | **Exact** ✅ | Exact | ✅ VERIFIED |
+| **Codebook Usage** | >90% | **11.69%** ⚠️ | 90%+ (trained) | ⚠️ Needs Training |
+| **Encoding Speed** | 12x faster | **0.04x** ❌ | ~12x (FP16+compile) | 📝 Expected |
+| **FPS @ 256×256** | - | **26 FPS** ✅ | ~100-150 FPS | 📝 Expected |
+| **FPS @ 640×360** | 40-50 | - | ~40-50 (optimized) | 📝 Expected |
 
+**Legend**:
+- ✅ VERIFIED = Tested and confirmed on M4 Max
+- ⚠️ = Partial success (needs training/optimization)
+- ❌ = Not achieved on M4 Max (hardware limitation)
+- 📝 Expected = Theoretical estimate for CUDA (untested)
+
+### Key Findings from Real-World Testing
+
+**What Works ✅**:
+1. **Architecture is sound** - Perfect shape preservation after bug fixes
+2. **Compression exceeds targets** - 32x better (vs 8x target)
+3. **Quality is good** - 19.37 dB PSNR on untrained model
+4. **All components integrate** - Full pipeline runs end-to-end
+
+**Hardware Realities**:
+1. **MPS Performance** - ConvTranspose3d is bottleneck (69% of time)
+2. **Speed targets require CUDA** - FP16 + torch.compile on NVIDIA GPU
+3. **Untrained codebook usage** - 11.69% (needs training for 90%+)
+
+**Critical Bugs Fixed**:
+1. ✅ Decoder shape mismatch (128→121, 256→249) → Now exact
+2. ✅ Compression benchmark baseline → Now realistic 32x
+3. ✅ Codebook collapse → Improved 25x (0.46% → 11.69%)
+
+### Expected Performance on CUDA GPU
+
+**With FP16 + torch.compile on RTX 3060** (untested):
 ```
-Component          Improvement    Multiplier
-─────────────────────────────────────────────
-Tokenizer          8x compression    ×8
-Generation         10x faster        ×10
-Optimization       4x speedup        ×4
-─────────────────────────────────────────────
-TOTAL SPEEDUP:                       ×320
-Memory Usage:      85% reduction     ÷6.7
+Component          M4 Max      CUDA (Expected)    Multiplier
+────────────────────────────────────────────────────────────
+Tokenizer          26 FPS      ~100-150 FPS       4-6x faster
+With FP16          N/A         ~200-300 FPS       2x from FP16
+With compile       N/A         ~400-600 FPS       2x from compile
+────────────────────────────────────────────────────────────
+Total Expected:                ~400-600 FPS       ~12x target
 ```
+
+### Development Recommendations
+
+**For M4 Max Users** (Tested):
+- ✅ Use for development & prototyping
+- ✅ Architecture validated
+- ⚠️ Speed targets theoretical (CUDA-only)
+- 📊 Expect ~26 FPS @ 256×256
+
+**For CUDA Users** (Expected):
+- 📝 Should achieve ~12x speed target with optimizations
+- 📝 FP16 + torch.compile required
+- 📝 RTX 3060 or better recommended
+- 📝 Community validation needed
 
 ---
 
