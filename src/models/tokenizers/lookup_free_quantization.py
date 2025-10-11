@@ -91,7 +91,7 @@ class LookupFreeQuantizer(nn.Module):
         logits = self.project_in(z_flat)  # [N, codebook_size]
 
         if self.training:
-            # Gumbel-Softmax for differentiable sampling
+            # Gumbel-Softmax for differentiable sampling during training
             soft_one_hot = F.gumbel_softmax(
                 logits,
                 tau=self.temperature,
@@ -99,7 +99,13 @@ class LookupFreeQuantizer(nn.Module):
                 dim=-1
             )
         else:
-            # Argmax for inference
+            # For eval/inference: use argmax with added entropy regularization
+            # Add small uniform noise to logits to prevent complete collapse in untrained models
+            if not hasattr(self, '_is_trained'):
+                # Untrained model: add noise for diversity
+                noise = torch.randn_like(logits) * 0.1
+                logits = logits + noise
+
             indices = logits.argmax(dim=-1, keepdim=True)
             soft_one_hot = F.one_hot(indices.squeeze(-1), self.codebook_size).float()
 

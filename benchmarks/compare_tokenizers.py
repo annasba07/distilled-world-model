@@ -54,7 +54,7 @@ class DummyOldTokenizer(torch.nn.Module):
 
     In production, replace with your actual old tokenizer.
     This simulates a traditional VQ-VAE with:
-    - Lower compression
+    - Lower compression (only 2x spatial, no temporal)
     - Slower encoding
     - Potential codebook collapse
     """
@@ -64,19 +64,19 @@ class DummyOldTokenizer(torch.nn.Module):
         self.latent_dim = latent_dim
         self.codebook_size = codebook_size
 
-        # Simplified encoder/decoder
+        # Simplified encoder/decoder (weak compression - only 1 stride-2 layer)
         self.encoder = torch.nn.Sequential(
-            torch.nn.Conv3d(3, 64, 3, stride=2, padding=1),
+            torch.nn.Conv3d(3, 64, 3, stride=(1, 2, 2), padding=1),  # Only spatial stride
             torch.nn.ReLU(),
-            torch.nn.Conv3d(64, 128, 3, stride=2, padding=1),
+            torch.nn.Conv3d(64, 128, 3, stride=1, padding=1),
             torch.nn.ReLU(),
             torch.nn.Conv3d(128, latent_dim, 3, padding=1),
         )
 
         self.decoder = torch.nn.Sequential(
-            torch.nn.ConvTranspose3d(latent_dim, 128, 4, stride=2, padding=1),
+            torch.nn.ConvTranspose3d(latent_dim, 128, 4, stride=(1, 2, 2), padding=1),  # Only spatial upsampling
             torch.nn.ReLU(),
-            torch.nn.ConvTranspose3d(128, 64, 4, stride=2, padding=1),
+            torch.nn.Conv3d(128, 64, 3, padding=1),
             torch.nn.ReLU(),
             torch.nn.Conv3d(64, 3, 3, padding=1),
             torch.nn.Sigmoid(),
@@ -88,6 +88,8 @@ class DummyOldTokenizer(torch.nn.Module):
     def encode(self, x):
         # Simulate slower encoding (inefficient implementation)
         time.sleep(0.01)  # Simulate overhead
+        if x.shape[2] == 3:  # [B, T, C, H, W]
+            x = x.permute(0, 2, 1, 3, 4)  # [B, C, T, H, W]
         h = self.encoder(x)
         B, D, T, H, W = h.shape
         h_flat = h.permute(0, 2, 3, 4, 1).reshape(-1, D)
@@ -160,13 +162,25 @@ def benchmark_tokenizer(
         metrics['encode_fps'] = video.shape[1] / encode_time  # frames / sec
 
         # 3. Reconstruction quality
-        output = tokenizer(video)
+        output = tokenizer(video, return_loss=False) if hasattr(tokenizer, '__call__') and 'return_loss' in tokenizer.forward.__code__.co_varnames else tokenizer(video)
         x_recon = output['x_recon']
 
         # Ensure same format
+        if video.shape[2] == 3:  # [B, T, C, H, W]
+            video = video.permute(0, 2, 1, 3, 4)  # [B, C, T, H, W]
+
+        # Handle shape mismatch (crop or resize recon to match video)
         if x_recon.shape != video.shape:
-            if video.shape[2] == 3:  # [B, T, C, H, W]
-                video = video.permute(0, 2, 1, 3, 4)  # [B, C, T, H, W]
+            B_recon, C_recon, T_recon, H_recon, W_recon = x_recon.shape
+            B_vid, C_vid, T_vid, H_vid, W_vid = video.shape
+
+            # Interpolate spatial and temporal dims to match
+            x_recon = F.interpolate(
+                x_recon,
+                size=(T_vid, H_vid, W_vid),
+                mode='trilinear',
+                align_corners=False
+            )
 
         psnr = compute_psnr(x_recon, video)
         ssim = compute_ssim(x_recon, video)

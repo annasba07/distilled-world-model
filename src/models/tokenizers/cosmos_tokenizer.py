@@ -196,8 +196,35 @@ class CosmosInspiredTokenizer(nn.Module):
         }
 
         if return_loss:
+            # Handle shape mismatch (interpolate if needed)
+            if x_recon.shape != x.shape:
+                B, C, T_recon, H_recon, W_recon = x_recon.shape
+                _, _, T_orig, H_orig, W_orig = x.shape
+
+                # Interpolate spatial dims if needed
+                if H_recon != H_orig or W_recon != W_orig:
+                    x_recon_for_loss = F.interpolate(
+                        x_recon.flatten(0, 1),  # [B*T_recon, C, H_recon, W_recon]
+                        size=(H_orig, W_orig),
+                        mode='bilinear',
+                        align_corners=False
+                    ).unflatten(0, (B, T_recon))  # [B, C, T_recon, H_orig, W_orig]
+                else:
+                    x_recon_for_loss = x_recon
+
+                # Interpolate temporal dim if needed
+                if T_recon != T_orig:
+                    x_recon_for_loss = F.interpolate(
+                        x_recon_for_loss,
+                        size=(T_orig, H_orig, W_orig),
+                        mode='trilinear',
+                        align_corners=False
+                    )
+            else:
+                x_recon_for_loss = x_recon
+
             # Reconstruction loss (MSE)
-            recon_loss = F.mse_loss(x_recon, x)
+            recon_loss = F.mse_loss(x_recon_for_loss, x)
 
             # Quantization loss (from LFQ)
             _, quant_info = self.quantizer(

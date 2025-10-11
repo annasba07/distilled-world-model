@@ -10,7 +10,16 @@
       "Bash(git config:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(python3 -m pytest tests/unit/ -v)",
+      "Bash(pip3 install:*)",
+      "Bash(pip install:*)",
+      "Bash(python3:*)",
+      "Bash(source:*)",
+      "Bash(git checkout:*)",
+      "Bash(system_profiler:*)",
+      "Bash(timeout 120 python3:*)",
+      "Bash(tee:*)"
     ],
     "deny": [],
     "ask": []

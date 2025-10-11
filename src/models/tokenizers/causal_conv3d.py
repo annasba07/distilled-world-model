@@ -226,14 +226,29 @@ class CausalConv3DDecoder(nn.Module):
             temporal_stride = 2 if i == 0 else 1
             stride = (temporal_stride, 2, 2)
 
+            # Calculate padding for exact size inversion
+            padding = []
+            output_padding = []
+            for k, s in zip(kernel_size, stride):
+                if s == 1:
+                    padding.append(k // 2)
+                    output_padding.append(0)
+                else:
+                    if k % 2 == 0:
+                        padding.append((k - s) // 2)
+                        output_padding.append(0)
+                    else:
+                        padding.append(k // 2)
+                        output_padding.append(s - 1)
+
             layers.append(
                 nn.ConvTranspose3d(
                     prev_dim,
                     hidden_dim,
                     kernel_size=kernel_size,
                     stride=stride,
-                    padding=(kernel_size[0]//2, kernel_size[1]//2, kernel_size[2]//2),
-                    output_padding=(stride[0]-1, stride[1]-1, stride[2]-1)
+                    padding=tuple(padding),
+                    output_padding=tuple(output_padding)
                 )
             )
 
