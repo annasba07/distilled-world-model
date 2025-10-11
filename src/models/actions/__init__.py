@@ -13,8 +13,10 @@ Components:
 
 from .action_encoder import ActionEncoder
 from .action_quantizer import ActionQuantizer
+from .dynamics_model import DynamicsModel
 
 __all__ = [
     'ActionEncoder',
     'ActionQuantizer',
+    'DynamicsModel',
 ]
